@@ -1,7 +1,5 @@
 import { resolve } from 'node:path'
 import { createTetherAdapter } from './adapter.js'
-import { createPuppeteerBrowserController } from './puppeteer-browser-controller.js'
-import { createPlaywrightBrowserController } from './playwright-browser-controller.js'
 
 const port = parsePort(process.env.TETHER_ADAPTER_PORT ?? '8766')
 const browserEngine = process.env.TETHER_BROWSER_ENGINE
@@ -10,11 +8,7 @@ const browserOptions = {
       userDataDir: resolve('state/puppeteer-profile'),
       extensionPath: resolve('..', '..', 'REACT', 'rerender', 'dist'),
     }
-const browserController = browserEngine === 'playwright'
-  ? createPlaywrightBrowserController(browserOptions)
-  : browserEngine === 'puppeteer'
-    ? createPuppeteerBrowserController(browserOptions)
-    : null
+const browserController = await createBrowserController(browserEngine, browserOptions)
 const adapter = createTetherAdapter({
   port,
   capturePath: resolve('captures/requests.ndjson'),
@@ -41,4 +35,16 @@ function parsePort(value) {
   const parsed = Number(value)
   if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) throw new Error(`Invalid TETHER_ADAPTER_PORT: ${value}`)
   return parsed
+}
+
+async function createBrowserController(engine, options) {
+  if (engine === 'playwright') {
+    const { createPlaywrightBrowserController } = await import('./playwright-browser-controller.js')
+    return createPlaywrightBrowserController(options)
+  }
+  if (engine === 'puppeteer') {
+    const { createPuppeteerBrowserController } = await import('./puppeteer-browser-controller.js')
+    return createPuppeteerBrowserController(options)
+  }
+  return null
 }

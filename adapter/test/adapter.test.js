@@ -5,6 +5,16 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createTetherAdapter, HARDCODED_TEXT } from '../src/adapter.js'
 
+test('exposes a health contract for the packaged CLI launcher', async (t) => {
+  const adapter = createTetherAdapter({ logger: { error() {} } })
+  const info = await adapter.start()
+  t.after(() => adapter.stop())
+
+  const response = await fetch(`http://${info.host}:${info.port}/tether/health`)
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), { status: 'ok', service: 'tether-adapter' })
+})
+
 test('handles warmup and an incremental hardcoded response on one Codex connection', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'tether-adapter-'))
   const capturePath = join(directory, 'requests.ndjson')

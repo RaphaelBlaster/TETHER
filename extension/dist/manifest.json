@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "116",
+  "name": "TETHER",
+  "version": "0.1.0",
+  "description": "Connects the TETHER Codex fork to a browser chat.",
+  "permissions": ["activeTab", "debugger", "scripting", "sidePanel", "storage", "tabs"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open TETHER"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  }
+}

@@ -34,6 +34,10 @@ export function createTetherAdapter({
   const browserTurns = createBrowserTurnController({ registry: extensionSessions, stateStore: conversationState, timeoutMs: browserTurnTimeoutMs })
 
   const server = createServer(async (request, response) => {
+    if (request.method === 'GET' && request.url === '/tether/health') {
+      sendHttpJson(response, 200, { status: 'ok', service: 'tether-adapter' })
+      return
+    }
     if (request.method === 'POST' && request.url === '/v1/responses') {
       try {
         const message = await readHttpJson(request)
