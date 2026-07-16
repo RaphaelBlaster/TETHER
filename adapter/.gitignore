@@ -1,0 +1,5 @@
+captures/
+node_modules/
+server-info.json
+state/
+*.log
