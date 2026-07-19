@@ -18,16 +18,23 @@ import { createDebuggerTransport } from './automation/debugger-transport.js'
 import { getOrCreateExtensionInstanceId } from './extension-protocol.js'
 import { shouldCancelTabOperations, shouldReleaseBrowserAutomation } from './navigation-policy.js'
 import { ensureTetherContentScript } from './content-script-lifecycle.js'
+import { createSerialTaskQueue } from './serial-task-queue.js'
 import {
   ACTIVE_RESPONSE_CALIBRATIONS_KEY,
   createResponseCalibrationSession,
 } from './response-calibration/response-calibration-session.js'
 
 const TRANSPORT_MODE_KEY = 'tetherTransportMode'
+const TETHER_THEME_KEY = 'tetherTheme'
 let transportMode = 'CLI'
+let tetherTheme = 'dark'
 const modeReady = chrome.storage.session.get(TRANSPORT_MODE_KEY).then((stored) => {
   transportMode = stored[TRANSPORT_MODE_KEY] === 'CROSS' ? 'CROSS' : 'CLI'
 })
+const themeReady = chrome.storage.local.get(TETHER_THEME_KEY).then((stored) => {
+  tetherTheme = stored[TETHER_THEME_KEY] === 'light' ? 'light' : 'dark'
+})
+const endpointMutations = createSerialTaskQueue()
 
 function broadcast(message) {
   chrome.runtime.sendMessage(message).catch(() => {})
@@ -152,7 +159,12 @@ async function validateAdapterTestRequest(message, registration) {
   } catch {
     throw Object.assign(new Error('Browser session tab is unavailable'), { code: 'tab_unavailable' })
   }
-  const site = inspectSite(tab?.url)
+  const inspectedSite = inspectSite(tab?.url)
+  const site = {
+    ...inspectedSite,
+    title: tab?.title ?? inspectedSite.label ?? null,
+    faviconUrl: tab?.favIconUrl ?? null,
+  }
   if (tab?.id !== session.tabId || site.kind !== 'web' || site.origin !== session.origin || site.providerId !== session.providerId) {
     throw Object.assign(new Error('Browser session no longer matches its tab'), { code: 'session_tab_mismatch' })
   }
@@ -178,6 +190,7 @@ async function handleAdapterBrowserRequest(message, registration, { signal }) {
   })
   signal.addEventListener('abort', cancel, { once: true })
   try {
+    await setEndpointState(session.tabId, 'automation')
     const operation = await browserAutomation.request({
       requestId: message.requestId,
       browserSessionId: session.browserSessionId,
@@ -191,6 +204,9 @@ async function handleAdapterBrowserRequest(message, registration, { signal }) {
     return operation.text
   } finally {
     signal.removeEventListener('abort', cancel)
+    if (browserSessions.getById(session.browserSessionId)) {
+      await setEndpointState(session.tabId, 'active').catch(() => {})
+    }
   }
 }
 
@@ -269,7 +285,12 @@ function calibrationProjection(profileInspection, validation, profile, origin) {
 async function panelState(sender) {
   await lifecycleReady
   const tab = await tabForPanelSender(sender)
-  const site = inspectSite(tab?.url)
+  const inspectedSite = inspectSite(tab?.url)
+  const site = {
+    ...inspectedSite,
+    title: tab?.title ?? inspectedSite.label ?? null,
+    faviconUrl: tab?.favIconUrl ?? null,
+  }
   const session = browserSessions.getByTabId(tab?.id)
   const crossSessions = browserSessions.list().filter((candidate) => candidate.transportMode === 'CROSS')
   const endpoints = {
@@ -334,8 +355,22 @@ function sendFailure(sendResponse, error) {
 }
 
 async function setEndpointState(tabId, state, message = undefined) {
+  await themeReady
+  const tab = await chrome.tabs.get(tabId).catch(() => null)
+  const site = inspectSite(tab?.url)
   await ensureContentScript(tabId)
-  return chrome.tabs.sendMessage(tabId, { type: 'tether.endpointState', state, mode: transportMode, message })
+  return chrome.tabs.sendMessage(tabId, {
+    type: 'tether.endpointState',
+    state,
+    mode: transportMode,
+    theme: tetherTheme,
+    message,
+    context: {
+      title: tab?.title ?? site.label ?? 'Browser chat',
+      host: site.host ?? site.origin ?? '',
+      faviconUrl: tab?.favIconUrl ?? null,
+    },
+  })
 }
 
 const startCalibrationFromPanel = createCalibrationStartCoordinator({
@@ -356,12 +391,27 @@ const startCalibrationFromPanel = createCalibrationStartCoordinator({
 })
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'tether.theme.set') {
+    themeReady.then(() => endpointMutations.run(async () => {
+      if (!['dark', 'light'].includes(message.theme)) {
+        throw Object.assign(new Error('Unsupported TETHER theme'), { code: 'invalid_theme' })
+      }
+      tetherTheme = message.theme
+      await chrome.storage.local.set({ [TETHER_THEME_KEY]: tetherTheme })
+      await Promise.all(browserSessions.list().map((session) => chrome.tabs.sendMessage(session.tabId, {
+        type: 'tether.theme.set',
+        theme: tetherTheme,
+      }).catch(() => {})))
+      return tetherTheme
+    })).then((theme) => sendResponse({ ok: true, theme }), (error) => sendFailure(sendResponse, error))
+    return true
+  }
   if (message?.type === 'mode.get') {
     modeReady.then(() => sendResponse({ ok: true, mode: transportMode }))
     return true
   }
   if (message?.type === 'mode.set') {
-    modeReady.then(async () => {
+    modeReady.then(() => endpointMutations.run(async () => {
       if (!['CLI', 'CROSS'].includes(message.mode)) throw Object.assign(new Error('Unsupported TETHER mode'), { code: 'invalid_mode' })
       const nextMode = message.mode
       if (nextMode !== transportMode && browserSessions.list().length > 0) {
@@ -373,7 +423,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       broadcast({ type: 'mode.stateChanged', mode: transportMode })
       broadcast({ type: 'panel.stateChanged' })
       return transportMode
-    }).then((mode) => sendResponse({ ok: true, mode }), (error) => sendFailure(sendResponse, error))
+    })).then((mode) => sendResponse({ ok: true, mode }), (error) => sendFailure(sendResponse, error))
     return true
   }
   if (message?.type === 'connection.getState') {
@@ -389,7 +439,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'browserSession.activate') {
     lifecycleReady
-      .then(async () => {
+      .then(() => endpointMutations.run(async () => {
         const tab = await tabForPanelSender(sender)
         const current = await panelState(sender)
         if (current.access !== 'granted' || (!current.site?.hasAdapter && current.calibration?.state !== 'valid')) {
@@ -404,8 +454,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (transportMode === 'CROSS' && !['MASTER', 'SLAVE'].includes(requestedRole)) {
           throw Object.assign(new Error('Choose MASTER or SLAVE before activating this CROSS endpoint'), { code: 'cross_role_required' })
         }
+        const reboundTab = await tabForPanelSender(sender)
+        if (reboundTab?.id !== tab.id) {
+          throw Object.assign(new Error('The side panel changed tabs before activation completed'), { code: 'panel_tab_changed' })
+        }
+        const freshTab = await chrome.tabs.get(tab.id)
+        const freshSite = inspectSite(freshTab.url)
+        if (freshSite.kind !== 'web' || freshSite.origin !== current.site?.origin || freshSite.providerId !== current.site?.providerId) {
+          throw Object.assign(new Error('This tab navigated before activation completed; review it and try again'), { code: 'tab_navigated' })
+        }
         const session = await browserSessions.activate(
-          tab,
+          freshTab,
           await loadCalibrationProfiles(),
           current.calibration.validation,
           {
@@ -417,7 +476,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await publishBrowserSessions(tab.id)
         setEndpointState(session.tabId, 'active').catch(() => {})
         return panelState(sender)
-      })
+      }))
       .then(
         (state) => sendResponse({ ok: true, state }),
         (error) => sendFailure(sendResponse, error),
@@ -426,21 +485,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'browserSession.deactivate') {
     lifecycleReady
-      .then(async () => {
+      .then(() => endpointMutations.run(async () => {
         const tab = await tabForPanelSender(sender)
         const existingSession = browserSessions.getByTabId(tab.id)
         if (existingSession) {
-          await setEndpointState(existingSession.tabId, 'hidden').catch(() => {})
+          await setEndpointState(existingSession.tabId, 'releasing').catch(() => {})
+          await browserSessions.removeByTabId(tab.id)
           injection.cancelBySessionId(existingSession.browserSessionId, 'session_deactivated')
           extraction.cancelBySessionId(existingSession.browserSessionId, 'session_deactivated')
           await responseCalibration.cancel(existingSession.browserSessionId, 'session_deactivated')
-          await browserAutomation.release(existingSession.tabId)
+          await browserAutomation.release(existingSession.tabId).catch(() => {})
+        } else {
+          await browserSessions.removeByTabId(tab.id)
         }
-        await browserSessions.removeByTabId(tab.id)
         await tabPanels.sessionRemoved(tab.id)
         await publishBrowserSessions(tab.id)
         return panelState(sender)
-      })
+      }))
       .then(
         (state) => sendResponse({ ok: true, state }),
         (error) => sendFailure(sendResponse, error),
@@ -448,13 +509,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true
   }
   if (message?.type === 'browserSession.role.set') {
-    lifecycleReady.then(async () => {
+    lifecycleReady.then(() => endpointMutations.run(async () => {
       const tab = await tabForPanelSender(sender)
       const session = await browserSessions.setRole(tab.id, message.role)
       await publishBrowserSessions(tab.id)
       setEndpointState(session.tabId, 'active').catch(() => {})
       return panelState(sender)
-    }).then(
+    })).then(
       (state) => sendResponse({ ok: true, state }),
       (error) => sendFailure(sendResponse, error),
     )

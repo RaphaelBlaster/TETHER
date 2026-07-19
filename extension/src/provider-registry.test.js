@@ -13,6 +13,7 @@ test('unknown HTTPS origins are configurable without adapters', () => {
   const site = inspectSite('https://support.example.com/app')
   assert.equal(site.kind, 'web')
   assert.equal(site.origin, 'https://support.example.com')
+  assert.equal(site.host, 'support.example.com')
   assert.equal(site.label, 'support.example.com')
   assert.equal(site.hasAdapter, false)
   assert.equal(site.conversationId, null)

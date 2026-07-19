@@ -1,10 +1,9 @@
 import './App.css'
 import React from 'react'
-import Silk from './Silk'
-import RotatingText from './components/RotatingText'
-import OptionWheel from './components/OptionWheel'
+import TetherProductUI from './components/TetherProductUI'
 import { requestCalibrationAccess } from './calibration/calibration-access.js'
 import { SIDE_PANEL_PORT } from './calibration/panel-lifecycle.js'
+import { shouldBindPanelToActivation } from './panel-binding-policy.js'
 import { projectCalibrationStatus, projectPrimaryStatus } from './panel-state-model.js'
 
 const CALIBRATION_PROGRESS = {
@@ -13,8 +12,25 @@ const CALIBRATION_PROGRESS = {
   selecting_send: 'Composer saved. Now select the Send control.',
 }
 
+const DEMO_PANEL_STATE = {
+  access: 'granted',
+  site: {
+    label: 'ChatGPT',
+    origin: 'https://chatgpt.com',
+    host: 'chatgpt.com',
+    hasAdapter: true,
+  },
+  activation: { state: 'inactive', role: null },
+  calibration: { state: 'valid', validation: { valid: true }, diagnostics: null },
+  endpoints: { count: 0 },
+  responseCalibration: { state: 'idle', operation: null },
+  injectionOperation: null,
+  extractionOperation: null,
+  error: null,
+}
+
 function useConnectionState() {
-  const [state, setState] = React.useState('unavailable')
+  const [state, setState] = React.useState(() => globalThis.chrome?.runtime ? 'unavailable' : 'connected')
   React.useEffect(() => {
     if (!globalThis.chrome?.runtime) return undefined
     const listener = (message) => {
@@ -30,9 +46,12 @@ function useConnectionState() {
 }
 
 function usePanelState() {
-  const [state, setState] = React.useState({ access: 'loading' })
+  const [state, setState] = React.useState(() => globalThis.chrome?.runtime ? { access: 'loading' } : DEMO_PANEL_STATE)
+  const stateRef = React.useRef(state)
   const requestSequence = React.useRef(0)
+  React.useEffect(() => { stateRef.current = state }, [state])
   const refresh = React.useCallback(async () => {
+    if (!globalThis.chrome?.runtime) return stateRef.current
     const sequence = ++requestSequence.current
     const response = await chrome.runtime.sendMessage({ type: 'panel.getState' })
     if (!response?.ok) throw new Error(response?.error ?? 'TETHER state is unavailable')
@@ -66,49 +85,49 @@ function App() {
   const startPendingRef = React.useRef(false)
   const [testMessage, setTestMessage] = React.useState('')
   const injectionPendingRef = React.useRef(false)
+  const extractionPendingRef = React.useRef(false)
+  const manualSelectionPendingRef = React.useRef(false)
+  const cancellationPendingRef = React.useRef(false)
   const responseCalibrationPendingRef = React.useRef(false)
-  const modeTextRef = React.useRef(null)
-  const modeMenuRef = React.useRef(null)
-  const crossRoleMenuRef = React.useRef(null)
   const [mode, setMode] = React.useState('CLI')
-  const [modeMenuOpen, setModeMenuOpen] = React.useState(false)
-  const [crossRoleMenuOpen, setCrossRoleMenuOpen] = React.useState(false)
   const [crossRoleChoice, setCrossRoleChoice] = React.useState('MASTER')
   const selectorPendingRef = React.useRef(false)
   const [selectorAction, setSelectorAction] = React.useState(null)
-  const crossRoleTextRef = React.useRef(null)
   const [activationAction, setActivationAction] = React.useState(null)
   const activationPendingRef = React.useRef(false)
   const [siteAccessPending, setSiteAccessPending] = React.useState(false)
+  const siteAccessPendingRef = React.useRef(false)
+  const siteAccessSequenceRef = React.useRef(0)
+  const calibrationSequenceRef = React.useRef(0)
+  const bindingRef = React.useRef({ tabId: null, version: 0 })
+  const connectionMomentSequence = React.useRef(0)
+  const [connectionMoment, setConnectionMoment] = React.useState(null)
   const crossRole = panelState.activation?.role ?? crossRoleChoice
 
+  const captureBinding = React.useCallback(() => ({ ...bindingRef.current }), [])
+  const isCurrentBinding = React.useCallback((ticket) => (
+    ticket.version === bindingRef.current.version && ticket.tabId === bindingRef.current.tabId
+  ), [])
+
   React.useEffect(() => {
+    if (!globalThis.chrome?.runtime) return undefined
     chrome.runtime.sendMessage({ type: 'mode.get' }).then((response) => response?.ok && setMode(response.mode)).catch(() => {})
     const listener = (message) => { if (message?.type === 'mode.stateChanged') setMode(message.mode) }
     chrome.runtime.onMessage.addListener(listener)
     return () => chrome.runtime.onMessage.removeListener(listener)
   }, [])
 
-  React.useEffect(() => { modeTextRef.current?.jumpTo(mode === 'CROSS' ? 1 : 0) }, [mode])
-  React.useEffect(() => { crossRoleTextRef.current?.jumpTo(crossRole === 'SLAVE' ? 1 : 0) }, [crossRole])
-
-  React.useEffect(() => {
-    if (!modeMenuOpen && !crossRoleMenuOpen) return undefined
-    const close = (event) => {
-      if (!modeMenuRef.current?.contains(event.target)) setModeMenuOpen(false)
-      if (!crossRoleMenuRef.current?.contains(event.target)) setCrossRoleMenuOpen(false)
-    }
-    const escape = (event) => { if (event.key === 'Escape') { setModeMenuOpen(false); setCrossRoleMenuOpen(false) } }
-    document.addEventListener('pointerdown', close); document.addEventListener('keydown', escape)
-    return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', escape) }
-  }, [modeMenuOpen, crossRoleMenuOpen])
-
-  async function selectMode(_index, nextMode) {
+  async function selectMode(value, legacyValue) {
+    const nextMode = legacyValue ?? value
     if (selectorPendingRef.current) return
     selectorPendingRef.current = true
     setSelectorAction('mode')
-    setModeMenuOpen(false)
     try {
+      if (!globalThis.chrome?.runtime) {
+        await new Promise((resolve) => setTimeout(resolve, 180))
+        setMode(nextMode)
+        return
+      }
       const response = await chrome.runtime.sendMessage({ type: 'mode.set', mode: nextMode })
       if (response?.ok) setMode(response.mode)
       else showError(new Error(response?.error ?? 'TETHER mode could not be changed'))
@@ -118,20 +137,25 @@ function App() {
     }
   }
 
-  async function selectCrossRole(_index, nextRole) {
+  async function selectCrossRole(value, legacyValue) {
+    const nextRole = legacyValue ?? value
     if (selectorPendingRef.current) return
+    const binding = captureBinding()
     selectorPendingRef.current = true
     setSelectorAction('role')
-    setCrossRoleMenuOpen(false)
     try {
       if (panelState.activation?.state === 'active') {
+        if (!globalThis.chrome?.runtime) {
+          setCrossRoleChoice(nextRole)
+          return
+        }
         const response = await chrome.runtime.sendMessage({ type: 'browserSession.role.set', role: nextRole })
         if (!response?.ok) throw new Error(response?.error ?? 'CROSS role could not be changed')
-        setPanelState(response.state)
+        if (isCurrentBinding(binding)) setPanelState(response.state)
       }
-      setCrossRoleChoice(nextRole)
+      if (isCurrentBinding(binding)) setCrossRoleChoice(nextRole)
     } catch (error) {
-      showError(error)
+      showError(error, binding)
     } finally {
       selectorPendingRef.current = false
       setSelectorAction(null)
@@ -141,24 +165,51 @@ function App() {
   React.useEffect(() => {
     if (!globalThis.chrome?.runtime) return undefined
     const port = chrome.runtime.connect({ name: SIDE_PANEL_PORT })
+    const panelWindowIdRef = { current: null }
     const bind = (tabId) => {
       if (!Number.isInteger(tabId)) return
+      bindingRef.current = { tabId, version: bindingRef.current.version + 1 }
+      connectionMomentSequence.current += 1
+      siteAccessSequenceRef.current += 1
+      calibrationSequenceRef.current += 1
+      activationPendingRef.current = false
+      siteAccessPendingRef.current = false
+      startPendingRef.current = false
+      injectionPendingRef.current = false
+      extractionPendingRef.current = false
+      responseCalibrationPendingRef.current = false
+      manualSelectionPendingRef.current = false
+      cancellationPendingRef.current = false
+      setConnectionMoment(null)
+      setActivationAction(null)
+      setSiteAccessPending(false)
+      setStartPending(false)
       resetPanelForTab()
       port.postMessage({ type: 'panel.bind', tabId })
     }
-    const onActivated = ({ tabId }) => bind(tabId)
+    const onActivated = (activeInfo) => {
+      if (shouldBindPanelToActivation(panelWindowIdRef.current, activeInfo)) bind(activeInfo.tabId)
+    }
     const onPortMessage = (message) => {
-      if (message?.type === 'panel.bound') refreshPanelState().catch((error) => setPanelState({ access: 'error', error: error.message }))
+      if (message?.type === 'panel.bound' && message.tabId === bindingRef.current.tabId) {
+        const binding = captureBinding()
+        refreshPanelState().catch((error) => {
+          if (isCurrentBinding(binding)) setPanelState({ access: 'error', error: error.message })
+        })
+      }
     }
     port.onMessage.addListener(onPortMessage)
     chrome.tabs.onActivated.addListener(onActivated)
-    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => bind(tab?.id))
+    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+      if (Number.isInteger(tab?.windowId)) panelWindowIdRef.current = tab.windowId
+      bind(tab?.id)
+    })
     return () => {
       chrome.tabs.onActivated.removeListener(onActivated)
       port.onMessage.removeListener(onPortMessage)
       port.disconnect()
     }
-  }, [refreshPanelState, resetPanelForTab, setPanelState])
+  }, [captureBinding, isCurrentBinding, refreshPanelState, resetPanelForTab, setPanelState])
 
   const operationStage = panelState.calibrationOperation?.stage
   const calibrationActive = ['starting', 'selecting_composer', 'selecting_send'].includes(operationStage)
@@ -170,25 +221,38 @@ function App() {
   const extractionOperation = panelState.extractionOperation
   const extractionActive = extractionOperation?.stage === 'observing'
 
-  function showError(error) {
-    setPanelState((current) => ({ ...current, error: error.message }))
+  function showError(error, binding = captureBinding()) {
+    if (isCurrentBinding(binding)) setPanelState((current) => ({ ...current, error: error.message }))
   }
 
   async function enableSite() {
-    if (siteAccessPending) return
+    if (siteAccessPendingRef.current) return
+    const binding = captureBinding()
+    const operationId = ++siteAccessSequenceRef.current
+    siteAccessPendingRef.current = true
     setSiteAccessPending(true)
     try {
+      if (!globalThis.chrome?.runtime) {
+        await new Promise((resolve) => setTimeout(resolve, 420))
+        if (isCurrentBinding(binding)) setPanelState((current) => ({ ...current, access: 'granted', error: null }))
+        return
+      }
       await requestCalibrationAccess(panelState.site.origin)
-      await refreshPanelState()
+      if (isCurrentBinding(binding)) await refreshPanelState()
     } catch (error) {
-      showError(error)
+      showError(error, binding)
     } finally {
-      setSiteAccessPending(false)
+      if (operationId === siteAccessSequenceRef.current) {
+        siteAccessPendingRef.current = false
+        if (isCurrentBinding(binding)) setSiteAccessPending(false)
+      }
     }
   }
 
   async function startCalibration() {
     if (startPendingRef.current || calibrationActive || injectionActive || responseCalibrationActive) return
+    const binding = captureBinding()
+    const operationId = ++calibrationSequenceRef.current
     const requestId = crypto.randomUUID()
     startPendingRef.current = true
     setStartPending(true)
@@ -198,53 +262,101 @@ function App() {
       calibrationOperation: { stage: 'starting', requestId, error: null },
     }))
     try {
+      if (!globalThis.chrome?.runtime) {
+        await new Promise((resolve) => setTimeout(resolve, 700))
+        if (isCurrentBinding(binding)) setPanelState((current) => ({ ...current, calibration: { ...current.calibration, state: 'valid' }, calibrationOperation: null, error: null }))
+        return
+      }
       const response = await chrome.runtime.sendMessage({ type: 'calibration.start', requestId })
       if (!response?.ok) throw new Error(response?.error ?? 'Calibration could not start')
-      setPanelState((current) => ({ ...current, calibrationOperation: response.state, error: null }))
+      if (isCurrentBinding(binding)) setPanelState((current) => ({ ...current, calibrationOperation: response.state, error: null }))
     } catch (error) {
-      setPanelState((current) => ({
+      if (isCurrentBinding(binding)) setPanelState((current) => ({
         ...current,
         calibrationOperation: { stage: 'failed', error: error.message },
         error: error.message,
       }))
     } finally {
-      startPendingRef.current = false
-      setStartPending(false)
+      if (operationId === calibrationSequenceRef.current) {
+        startPendingRef.current = false
+        if (isCurrentBinding(binding)) setStartPending(false)
+      }
     }
   }
 
   async function cancelCalibration() {
-    await chrome.runtime.sendMessage({
-      type: 'calibration.cancel',
-      requestId: panelState.calibrationOperation?.requestId,
-    })
-    await refreshPanelState()
+    if (cancellationPendingRef.current) return
+    const binding = captureBinding()
+    cancellationPendingRef.current = true
+    try {
+      if (!globalThis.chrome?.runtime) {
+        setPanelState((current) => ({ ...current, calibrationOperation: null }))
+        return
+      }
+      await chrome.runtime.sendMessage({
+        type: 'calibration.cancel',
+        requestId: panelState.calibrationOperation?.requestId,
+      })
+      if (isCurrentBinding(binding)) await refreshPanelState()
+    } finally {
+      cancellationPendingRef.current = false
+    }
   }
 
   async function changeActivation(type) {
     if (activationPendingRef.current) return
+    const binding = captureBinding()
+    const momentId = ++connectionMomentSequence.current
     activationPendingRef.current = true
     const nextAction = type === 'browserSession.activate' ? 'activating' : 'deactivating'
+    const startedAt = performance.now()
     setActivationAction(nextAction)
+    setConnectionMoment({ id: momentId, kind: nextAction, stage: 'working', host: panelState.site?.host ?? panelState.site?.label })
     setPanelState((current) => ({ ...current, error: null }))
     try {
-      const response = await chrome.runtime.sendMessage({
-        type,
-        role: type === 'browserSession.activate' && mode === 'CROSS' ? crossRoleChoice : undefined,
-      })
-      if (!response?.ok) throw new Error(response?.error ?? 'TETHER could not update this tab')
-      setPanelState(response.state)
+      let nextState
+      if (!globalThis.chrome?.runtime) {
+        await new Promise((resolve) => setTimeout(resolve, 360))
+        const activating = type === 'browserSession.activate'
+        nextState = {
+          ...panelState,
+          activation: { state: activating ? 'active' : 'inactive', role: activating && mode === 'CROSS' ? crossRoleChoice : null },
+          endpoints: { count: activating ? 1 : 0 },
+        }
+      } else {
+        const response = await chrome.runtime.sendMessage({
+          type,
+          role: type === 'browserSession.activate' && mode === 'CROSS' ? crossRoleChoice : undefined,
+        })
+        if (!response?.ok) throw new Error(response?.error ?? 'TETHER could not update this tab')
+        nextState = response.state
+      }
+      if (!isCurrentBinding(binding) || momentId !== connectionMomentSequence.current) return
+      setPanelState(nextState)
+      const remaining = Math.max(0, 560 - (performance.now() - startedAt))
+      if (remaining) await new Promise((resolve) => setTimeout(resolve, remaining))
+      if (!isCurrentBinding(binding) || momentId !== connectionMomentSequence.current) return
+      setConnectionMoment((current) => current?.id === momentId ? { ...current, stage: 'complete' } : current)
+      await new Promise((resolve) => setTimeout(resolve, 720))
     } catch (error) {
-      showError(error)
+      if (isCurrentBinding(binding) && momentId === connectionMomentSequence.current) {
+        showError(error, binding)
+        setConnectionMoment((current) => current?.id === momentId ? { ...current, stage: 'failed' } : current)
+        await new Promise((resolve) => setTimeout(resolve, 900))
+      }
     } finally {
-      activationPendingRef.current = false
-      setActivationAction(null)
+      if (momentId === connectionMomentSequence.current) activationPendingRef.current = false
+      if (isCurrentBinding(binding) && momentId === connectionMomentSequence.current) {
+        setConnectionMoment(null)
+        setActivationAction(null)
+      }
     }
   }
 
   async function submitTestMessage(event) {
     event.preventDefault()
     if (injectionPendingRef.current || injectionActive || !testMessage.trim()) return
+    const binding = captureBinding()
     const requestId = crypto.randomUUID()
     injectionPendingRef.current = true
     setPanelState((current) => ({
@@ -252,11 +364,16 @@ function App() {
       injectionOperation: { stage: 'injecting', requestId, error: null },
     }))
     try {
+      if (!globalThis.chrome?.runtime) {
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        if (isCurrentBinding(binding)) setPanelState((current) => ({ ...current, injectionOperation: { stage: 'complete', requestId } }))
+        return
+      }
       const response = await chrome.runtime.sendMessage({ type: 'injection.start', requestId, text: testMessage })
       if (!response?.ok) throw new Error(response?.error ?? 'Test-message injection failed')
-      setPanelState((current) => ({ ...current, injectionOperation: response.state }))
+      if (isCurrentBinding(binding)) setPanelState((current) => ({ ...current, injectionOperation: response.state }))
     } catch (error) {
-      setPanelState((current) => ({
+      if (isCurrentBinding(binding)) setPanelState((current) => ({
         ...current,
         injectionOperation: { stage: 'failed', error: error.message },
       }))
@@ -266,25 +383,60 @@ function App() {
   }
 
   async function cancelInjection() {
-    await chrome.runtime.sendMessage({ type: 'injection.cancel' })
-    await refreshPanelState()
+    if (cancellationPendingRef.current) return
+    const binding = captureBinding()
+    cancellationPendingRef.current = true
+    try {
+      if (!globalThis.chrome?.runtime) {
+        setPanelState((current) => ({ ...current, injectionOperation: { stage: 'cancelled' } }))
+        return
+      }
+      await chrome.runtime.sendMessage({ type: 'injection.cancel' })
+      if (isCurrentBinding(binding)) await refreshPanelState()
+    } finally {
+      cancellationPendingRef.current = false
+    }
   }
 
   async function startExtractionTest(event) {
     event.preventDefault()
-    if (extractionActive || !testMessage.trim()) return
-    const response = await chrome.runtime.sendMessage({ type: 'extraction.start', requestId: crypto.randomUUID(), text: testMessage })
-    if (!response?.ok) showError(new Error(response?.error ?? 'Response extraction could not start'))
-    await refreshPanelState().catch(() => {})
+    if (extractionPendingRef.current || extractionActive || !testMessage.trim()) return
+    const binding = captureBinding()
+    extractionPendingRef.current = true
+    try {
+      if (!globalThis.chrome?.runtime) {
+        setPanelState((current) => ({ ...current, extractionOperation: { stage: 'observing' } }))
+        await new Promise((resolve) => setTimeout(resolve, 650))
+        if (isCurrentBinding(binding)) setPanelState((current) => ({ ...current, extractionOperation: { stage: 'complete', result: { text: 'Preview response extracted successfully.' } } }))
+        return
+      }
+      const response = await chrome.runtime.sendMessage({ type: 'extraction.start', requestId: crypto.randomUUID(), text: testMessage })
+      if (!response?.ok) showError(new Error(response?.error ?? 'Response extraction could not start'), binding)
+      if (isCurrentBinding(binding)) await refreshPanelState().catch(() => {})
+    } finally {
+      extractionPendingRef.current = false
+    }
   }
 
   async function cancelExtractionTest() {
-    await chrome.runtime.sendMessage({ type: 'extraction.cancel' })
-    await refreshPanelState()
+    if (cancellationPendingRef.current) return
+    const binding = captureBinding()
+    cancellationPendingRef.current = true
+    try {
+      if (!globalThis.chrome?.runtime) {
+        setPanelState((current) => ({ ...current, extractionOperation: { stage: 'cancelled' } }))
+        return
+      }
+      await chrome.runtime.sendMessage({ type: 'extraction.cancel' })
+      if (isCurrentBinding(binding)) await refreshPanelState()
+    } finally {
+      cancellationPendingRef.current = false
+    }
   }
 
   async function startResponseCalibration() {
     if (responseCalibrationPendingRef.current || responseCalibrationActive || injectionActive || calibrationActive) return
+    const binding = captureBinding()
     const requestId = crypto.randomUUID()
     responseCalibrationPendingRef.current = true
     setPanelState((current) => ({
@@ -296,26 +448,53 @@ function App() {
       },
     }))
     try {
+      if (!globalThis.chrome?.runtime) {
+        await new Promise((resolve) => setTimeout(resolve, 720))
+        if (isCurrentBinding(binding)) setPanelState((current) => ({ ...current, responseCalibration: { state: 'ready', operation: { stage: 'complete' } } }))
+        return
+      }
       const response = await chrome.runtime.sendMessage({ type: 'responseCalibration.start', requestId })
       if (!response?.ok) throw new Error(response?.error ?? 'Response calibration could not start')
-      await refreshPanelState()
+      if (isCurrentBinding(binding)) await refreshPanelState()
     } catch (error) {
-      showError(error)
-      await refreshPanelState().catch(() => {})
+      showError(error, binding)
+      if (isCurrentBinding(binding)) await refreshPanelState().catch(() => {})
     } finally {
       responseCalibrationPendingRef.current = false
     }
   }
 
   async function cancelResponseCalibration() {
-    await chrome.runtime.sendMessage({ type: 'responseCalibration.cancel' })
-    await refreshPanelState()
+    if (cancellationPendingRef.current) return
+    const binding = captureBinding()
+    cancellationPendingRef.current = true
+    try {
+      if (!globalThis.chrome?.runtime) {
+        setPanelState((current) => ({ ...current, responseCalibration: { state: 'idle', operation: { stage: 'cancelled' } } }))
+        return
+      }
+      await chrome.runtime.sendMessage({ type: 'responseCalibration.cancel' })
+      if (isCurrentBinding(binding)) await refreshPanelState()
+    } finally {
+      cancellationPendingRef.current = false
+    }
   }
 
   async function startManualResponseSelection() {
-    const response = await chrome.runtime.sendMessage({ type: 'responseCalibration.manualSelect' })
-    if (!response?.ok) showError(new Error(response?.error ?? 'Guided response selection could not start'))
-    await refreshPanelState().catch(() => {})
+    if (manualSelectionPendingRef.current) return
+    const binding = captureBinding()
+    manualSelectionPendingRef.current = true
+    try {
+      if (!globalThis.chrome?.runtime) {
+        setPanelState((current) => ({ ...current, responseCalibration: { ...current.responseCalibration, operation: { stage: 'manual_selecting_turn' } } }))
+        return
+      }
+      const response = await chrome.runtime.sendMessage({ type: 'responseCalibration.manualSelect' })
+      if (!response?.ok) showError(new Error(response?.error ?? 'Guided response selection could not start'), binding)
+      if (isCurrentBinding(binding)) await refreshPanelState().catch(() => {})
+    } finally {
+      manualSelectionPendingRef.current = false
+    }
   }
 
   function responseCalibrationContent() {
@@ -580,37 +759,40 @@ function App() {
     )
   }
 
-  // Preserve the existing calibration renderer for workflows that still call
-  // its handlers, while keeping it out of this streamlined session surface.
   void panelContent
 
+  const isActive = panelState.activation?.state === 'active'
+  const advancedContent = (
+    <div className="product-tools">
+      {!calibrationActive && <section className="product-tool-card">{calibrationContent()}</section>}
+      {isActive && panelState.calibration?.state === 'valid' && <section className="product-tool-card">{responseCalibrationContent()}</section>}
+      {isActive && panelState.calibration?.state === 'valid' && !responseCalibrationActive && <section className="product-tool-card">{injectionContent()}</section>}
+      {diagnostics()}
+    </div>
+  )
+
   return (
-    <main className="tether-panel" aria-label="TETHER side panel">
-      <div className="tether-fluid-layer">
-        <Silk speed={5} scale={1} color="#5227FF" noiseIntensity={1.5} rotation={0} />
-      </div>
-      <section className="tether-title-stage" aria-label="TETHER mode selection">
-        <div className="tether-title-lockup" data-mode={mode.toLowerCase()}>
-          <span className="tether-wordmark">TETHER</span>
-          <div className="mode-selector" ref={modeMenuRef}>
-            <button type="button" className="mode-selector__trigger" aria-haspopup="listbox" aria-expanded={modeMenuOpen} title="Switch TETHER mode" disabled={Boolean(selectorAction || activationAction)} onClick={() => setModeMenuOpen((open) => !open)}>
-              <RotatingText ref={modeTextRef} texts={['CLI', 'CROSS']} auto={false} staggerFrom="last" initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '-120%' }} staggerDuration={.025} transition={{ type: 'spring', damping: 30, stiffness: 400 }} splitBy="characters" animatePresenceMode="sync" mainClassName="tether-mode-text" splitLevelClassName="tether-mode-clip" />
-            </button>
-            {modeMenuOpen && <div className="mode-selector__popover"><OptionWheel items={['CLI', 'CROSS']} defaultSelected={mode === 'CROSS' ? 1 : 0} onChange={selectMode} /></div>}
-          </div>
-          {mode === 'CROSS' && <div className="cross-role-menu" ref={crossRoleMenuRef}><button type="button" className="cross-role-selector" aria-haspopup="listbox" aria-expanded={crossRoleMenuOpen} aria-label={`Choose CROSS role. Currently ${crossRole}`} title="Choose whether this tab is MASTER or SLAVE" disabled={Boolean(selectorAction || activationAction)} onClick={() => setCrossRoleMenuOpen((open) => !open)}><RotatingText ref={crossRoleTextRef} texts={['MASTER', 'SLAVE']} auto={false} staggerFrom="last" initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '-120%' }} staggerDuration={.018} transition={{ type: 'spring', damping: 30, stiffness: 400 }} animatePresenceMode="sync" mainClassName="cross-role-text" splitLevelClassName="tether-mode-clip" /></button>{crossRoleMenuOpen && <div className="cross-role-menu__popover"><OptionWheel items={['MASTER', 'SLAVE']} defaultSelected={crossRole === 'SLAVE' ? 1 : 0} onChange={selectCrossRole} /></div>}</div>}
-        </div>
-      </section>
-      <section className="tether-session-console" aria-live="polite">
-        <div className="session-console__eyebrow"><span>{mode === 'CROSS' ? `CROSS · ${panelState.endpoints?.count ?? 0}/2 endpoints` : 'CLI endpoint'}</span><span>{connectionState === 'connected' ? 'Local bridge online' : 'Local bridge offline'}</span></div>
-        <h2>{panelState.activation?.state === 'active' ? 'TETHER is active on this tab' : (panelState.site?.hasAdapter || panelState.calibration?.state === 'valid') ? `${panelState.site?.label ?? 'This chat'} is ready` : 'This tab needs setup'}</h2>
-        <p>{panelState.activation?.state === 'active' ? `${panelState.site?.label ?? 'Browser chat'} is registered for ${mode} requests.` : mode === 'CLI' ? 'Activate this tab as the fixed browser endpoint for Codex CLI prompts and responses.' : `Choose this tab as ${crossRole}, then activate it. Configure the other CROSS tab with the opposite role.`}</p>
-        <dl className="session-console__facts"><div><dt>Mode</dt><dd>{mode === 'CROSS' ? `${mode} · ${crossRole}` : mode}</dd></div><div><dt>Current tab</dt><dd>{panelState.site?.label ?? 'Unsupported'}</dd></div><div><dt>TETHER</dt><dd>{panelState.activation?.state === 'active' ? 'Active' : (panelState.site?.hasAdapter || panelState.calibration?.state === 'valid') ? 'Ready' : 'Needs setup'}</dd></div></dl>
-        <div className="session-console__features" aria-label={panelState.activation?.state === 'active' ? 'Activated features' : 'Available features'}>{(mode === 'CLI' ? ['Pinned routing', 'Background delivery', 'Tool bridge'] : ['Two-tab relay', `${crossRole} identity`, 'Loop protection']).map((feature) => <span key={feature}>{feature}</span>)}</div>
-        {panelState.error && <p className="activation-feedback activation-feedback--error" role="alert">{panelState.error}</p>}
-        {panelState.access === 'required' ? <button type="button" className="tether-activation-button" aria-busy={siteAccessPending} disabled={siteAccessPending} onClick={enableSite}><span className="activation-button__label">{siteAccessPending ? 'Waiting for permission…' : `Allow TETHER on ${panelState.site?.label ?? 'this site'}`}</span><span className="activation-button__state" aria-hidden="true">Permission</span></button> : panelState.access === 'granted' && !panelState.site?.hasAdapter && panelState.calibration?.state !== 'valid' ? <button type="button" className="tether-activation-button" aria-busy={startPending || calibrationActive} disabled={startPending || calibrationActive} onClick={startCalibration}><span className="activation-button__label">{startPending || calibrationActive ? 'Select the requested controls on the page…' : 'Calibrate this tab'}</span><span className="activation-button__state" aria-hidden="true">{calibrationActive ? 'In progress' : 'Required'}</span></button> : panelState.access === 'granted' && (panelState.site?.hasAdapter || panelState.calibration?.state === 'valid') ? <button type="button" className="tether-activation-button" aria-busy={Boolean(activationAction)} disabled={Boolean(activationAction) || (panelState.activation?.state !== 'active' && connectionState !== 'connected')} onClick={() => changeActivation(panelState.activation?.state === 'active' ? 'browserSession.deactivate' : 'browserSession.activate')}><span className="activation-button__label">{activationAction === 'activating' ? 'Activating this tab…' : activationAction === 'deactivating' ? 'Releasing this tab…' : panelState.activation?.state === 'active' ? 'Deactivate TETHER' : connectionState !== 'connected' ? 'Start TETHER CLI to activate' : `Activate as ${mode === 'CROSS' ? crossRole : 'CLI endpoint'}`}</span><span className="activation-button__state" aria-hidden="true">{activationAction ? 'Working' : panelState.activation?.state === 'active' ? 'Active' : connectionState === 'connected' ? 'Ready' : 'Bridge offline'}</span></button> : <p className="session-console__hint">Open a supported AI chat or calibrate this site to activate an endpoint.</p>}
-      </section>
-    </main>
+    <TetherProductUI
+      state={panelState}
+      connectionState={connectionState}
+      mode={mode}
+      role={crossRole}
+      actionBusy={Boolean(activationAction)}
+      actionKind={activationAction}
+      selectorBusy={selectorAction}
+      siteAccessPending={siteAccessPending}
+      calibrationActive={calibrationActive}
+      startPending={startPending}
+      connectionMoment={connectionMoment}
+      workflowContent={<div className="product-tools"><section className="product-tool-card">{calibrationContent()}</section></div>}
+      advancedContent={advancedContent}
+      onMode={selectMode}
+      onRole={selectCrossRole}
+      onEnableSite={enableSite}
+      onCalibrate={startCalibration}
+      onActivate={() => changeActivation('browserSession.activate')}
+      onDeactivate={() => changeActivation('browserSession.deactivate')}
+    />
   )
 }
 

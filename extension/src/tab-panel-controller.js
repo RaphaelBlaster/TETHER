@@ -1,5 +1,8 @@
+import { createSerialTaskQueue } from './serial-task-queue.js'
+
 export function createTabPanelController({ sidePanel, hasSession }) {
   const activeTabByWindow = new Map()
+  const mutations = createSerialTaskQueue()
 
   async function initialize(sessions, activeTabs = []) {
     await sidePanel.setOptions({ enabled: false })
@@ -25,27 +28,31 @@ export function createTabPanelController({ sidePanel, hasSession }) {
     return Promise.all([configure, open])
   }
 
-  async function handleActivated({ tabId, windowId }) {
-    const previousTabId = activeTabByWindow.get(windowId)
-    activeTabByWindow.set(windowId, tabId)
-    if (Number.isInteger(previousTabId) && previousTabId !== tabId && !hasSession(previousTabId)) {
-      await sidePanel.setOptions({ tabId: previousTabId, enabled: false }).catch(() => {})
-    }
-    await sidePanel.setOptions({
-      tabId,
-      path: 'index.html',
-      enabled: hasSession(tabId),
+  function handleActivated({ tabId, windowId }) {
+    return mutations.run(async () => {
+      const previousTabId = activeTabByWindow.get(windowId)
+      activeTabByWindow.set(windowId, tabId)
+      if (Number.isInteger(previousTabId) && previousTabId !== tabId && !hasSession(previousTabId)) {
+        await sidePanel.setOptions({ tabId: previousTabId, enabled: false }).catch(() => {})
+      }
+      await sidePanel.setOptions({
+        tabId,
+        path: 'index.html',
+        enabled: hasSession(tabId),
+      })
     })
   }
 
   function sessionActivated(session) {
-    return sidePanel.setOptions({ tabId: session.tabId, path: 'index.html', enabled: true })
+    return mutations.run(() => sidePanel.setOptions({ tabId: session.tabId, path: 'index.html', enabled: true }))
   }
 
   function sessionRemoved(tabId) {
-    const isCurrentlyActive = [...activeTabByWindow.values()].includes(tabId)
-    if (isCurrentlyActive) return Promise.resolve()
-    return sidePanel.setOptions({ tabId, enabled: false }).catch(() => {})
+    return mutations.run(() => {
+      const isCurrentlyActive = [...activeTabByWindow.values()].includes(tabId)
+      if (isCurrentlyActive) return Promise.resolve()
+      return sidePanel.setOptions({ tabId, enabled: false }).catch(() => {})
+    })
   }
 
   function handleRemoved(tabId) {

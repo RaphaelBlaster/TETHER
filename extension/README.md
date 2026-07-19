@@ -1,16 +1,30 @@
-# React + Vite
+# TETHER browser extension
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The TETHER extension is a React 19 + Vite Manifest V3 side panel. It binds a supported or calibrated browser-chat tab to the local TETHER adapter, maintains stable tab/session identity, and installs the interaction guard used during browser automation.
 
-Currently, two official plugins are available:
+## Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```powershell
+npm install
+npm run dev
+```
 
-## React Compiler
+Build the unpacked extension:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```powershell
+npm run build
+```
 
-## Expanding the ESLint configuration
+Load `dist/` from `chrome://extensions` or `brave://extensions` with Developer mode enabled.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Checks
+
+```powershell
+npm run lint
+npm test
+npm run build
+```
+
+The production build creates the side panel, background service worker, self-contained content script, manifest, icons, and local font assets in `dist/`.
+
+See the [project README](../README.md) for product setup, architecture, runtime behavior, and troubleshooting.

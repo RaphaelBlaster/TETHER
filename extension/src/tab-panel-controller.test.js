@@ -56,3 +56,27 @@ test('returning to an activated tab enables its persistent panel', async () => {
     { tabId: 1, path: 'index.html', enabled: true },
   ])
 })
+
+test('serializes rapid side-panel option mutations in issue order', async () => {
+  const calls = []
+  let releaseFirst
+  const first = new Promise((resolve) => { releaseFirst = resolve })
+  const controller = createTabPanelController({
+    sidePanel: {
+      setOptions(value) {
+        calls.push(value)
+        return calls.length === 1 ? first : Promise.resolve()
+      },
+      open: () => Promise.resolve(),
+    },
+    hasSession: (tabId) => tabId === 2,
+  })
+
+  const inactive = controller.handleActivated({ tabId: 1, windowId: 9 })
+  const active = controller.handleActivated({ tabId: 2, windowId: 9 })
+  await Promise.resolve()
+  assert.equal(calls.length, 1)
+  releaseFirst()
+  await Promise.all([inactive, active])
+  assert.deepEqual(calls.at(-1), { tabId: 2, path: 'index.html', enabled: true })
+})

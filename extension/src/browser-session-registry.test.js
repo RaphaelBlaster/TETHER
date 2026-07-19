@@ -63,11 +63,23 @@ test('explicit activation is idempotent for one tab', async () => {
 test('two identical provider conversations in two tabs receive distinct sessions', async () => {
   const { registry } = harness({ uuids: ['browser-a', 'browser-b'] })
   await registry.initialize()
-  const first = await registry.activate(tab(1, 'https://chatgpt.com/c/same'), profiles, validCalibration)
-  const second = await registry.activate(tab(2, 'https://chatgpt.com/c/same'), profiles, validCalibration)
+  const first = await registry.activate(tab(1, 'https://chatgpt.com/c/same'), profiles, validCalibration, { transportMode: 'CROSS', role: 'MASTER' })
+  const second = await registry.activate(tab(2, 'https://chatgpt.com/c/same'), profiles, validCalibration, { transportMode: 'CROSS', role: 'SLAVE' })
   assert.notEqual(first.browserSessionId, second.browserSessionId)
   assert.equal(first.conversationId, 'same')
   assert.equal(second.conversationId, 'same')
+})
+
+test('concurrent CLI activation creates exactly one endpoint', async () => {
+  const { registry } = harness({ uuids: ['browser-a', 'browser-b'] })
+  await registry.initialize()
+  const results = await Promise.allSettled([
+    registry.activate(tab(1), profiles, validCalibration),
+    registry.activate(tab(2), profiles, validCalibration),
+  ])
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1)
+  assert.equal(results.filter((result) => result.status === 'rejected' && result.reason.code === 'cli_endpoint_exists').length, 1)
+  assert.equal(registry.list().length, 1)
 })
 
 test('stable conversation navigation preserves browserSessionId', async () => {
@@ -83,8 +95,8 @@ test('stable conversation navigation preserves browserSessionId', async () => {
 test('unsupported navigation and tab closure remove only the matching session', async () => {
   const { registry } = harness({ uuids: ['browser-a', 'browser-b'] })
   await registry.initialize()
-  await registry.activate(tab(1), profiles, validCalibration)
-  await registry.activate(tab(2), profiles, validCalibration)
+  await registry.activate(tab(1), profiles, validCalibration, { transportMode: 'CROSS', role: 'MASTER' })
+  await registry.activate(tab(2), profiles, validCalibration, { transportMode: 'CROSS', role: 'SLAVE' })
   await registry.updateTab(tab(1, 'https://example.com'))
   assert.equal(registry.getByTabId(1), null)
   assert.notEqual(registry.getByTabId(2), null)

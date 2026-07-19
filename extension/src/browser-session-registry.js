@@ -94,6 +94,9 @@ export function createBrowserSessionRegistry({
       return updated
     }
     const active = list()
+    if (transportMode === 'CLI' && active.length > 0) {
+      throw new BrowserSessionError('cli_endpoint_exists', 'CLI already has an active endpoint')
+    }
     if (transportMode === 'CROSS' && active.length >= 2) {
       throw new BrowserSessionError('cross_pair_complete', 'CROSS already has its MASTER and SLAVE endpoints')
     }

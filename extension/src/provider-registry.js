@@ -219,6 +219,7 @@ export function inspectSite(url) {
   return {
     kind: 'web',
     origin: parsed.origin,
+    host: parsed.hostname,
     permissionPattern: `${parsed.origin}/*`,
     calibrationKey: parsed.origin,
     providerId: provider?.id ?? `site:${parsed.origin}`,
