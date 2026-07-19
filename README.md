@@ -46,7 +46,7 @@ It is designed for a simple idea: **keep the conversation in the browser, but le
 Install directly from the repository:
 
 ```powershell
-npm install --global git+https://github.com/RaphaelBlaster/tether-suite.git
+npm install --global git+https://github.com/RaphaelBlaster/TETHER.git
 ```
 
 If the repository is private, authenticate Git for GitHub before running the command.
@@ -59,12 +59,26 @@ Ask the installed CLI for the exact extension directory:
 tether extension-path
 ```
 
+On a standard Windows npm installation, the printed directory will look like this:
+
+```text
+C:\Users\<YOUR_WINDOWS_USERNAME>\AppData\Roaming\npm\node_modules\@raphaelblaster\tether-cli\extension\dist
+```
+
+If you cloned the repository instead of using the global package, load this directory:
+
+```text
+C:\Users\<YOUR_WINDOWS_USERNAME>\path\to\TETHER\extension\dist
+```
+
+Replace `<YOUR_WINDOWS_USERNAME>` and `path\to` with the folders on your computer. The final folder must be `extension\dist`, with `manifest.json` directly inside it. Do not select `extension`, `src`, or the repository root.
+
 Then:
 
 1. Open `chrome://extensions` or `brave://extensions`.
 2. Enable **Developer mode**.
 3. Choose **Load unpacked**.
-4. Select the directory printed by `tether extension-path`. It must be the folder containing `manifest.json`.
+4. Paste the full directory printed by `tether extension-path` into the folder picker, open it, and select the `dist` folder containing `manifest.json`.
 5. Pin TETHER if you want one-click access to the side panel.
 
 ### 4. Start the local bridge and Codex
@@ -137,8 +151,8 @@ The side panel and protected-page card support light and dark themes. Theme chan
 Use this path when developing TETHER itself:
 
 ```powershell
-git clone https://github.com/RaphaelBlaster/tether-suite.git
-cd tether-suite
+git clone https://github.com/RaphaelBlaster/TETHER.git
+cd TETHER
 
 npm install
 npm --prefix extension install
@@ -149,7 +163,7 @@ npm install --global .
 For development, the unpacked extension directory is:
 
 ```text
-extension/dist
+C:\Users\<YOUR_WINDOWS_USERNAME>\path\to\TETHER\extension\dist
 ```
 
 Reload TETHER in the browser extension manager and refresh provider tabs after rebuilding the content script.
