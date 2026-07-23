@@ -90,6 +90,7 @@ export function createBrowserTurnController({
           operation.frames.push({
             requestId: repairRequestId,
             kind: 'repair',
+            toolSchemaDelivered: frame.kind === 'schema' || frame.toolSchemaDelivered === true,
             prompt: JSON.stringify({
               schemaVersion: 1,
               type: 'tether_protocol_repair',
@@ -97,13 +98,11 @@ export function createBrowserTurnController({
               error: error.code === 'invalid_tool_schema_request'
                 ? 'The previous tool schema request named a tool that Codex did not offer.'
                 : 'The previous response did not use the required TETHER JSON envelope.',
-              offeredTools: error.details?.offeredTools ?? [],
+              offeredTools: error.details?.offeredTools ?? offeredToolReferences(operation.codexRequest.tools ?? []),
               originalRequestId: frame.requestId,
               originalCommand: frame.prompt,
               ...(error.details?.rawText !== undefined ? { previousResponse: error.details.rawText } : {}),
-              instruction: error.details?.rawText !== undefined
-                ? 'Return exactly one assistant_text JSON object. Set content to previousResponse exactly, preserving all text and newlines. Do not add prose or markdown.'
-                : 'Re-evaluate originalCommand now. Follow its user turn and response contract. Return assistant_text when no offered tool is required. Otherwise request exactly one tool from offeredTools. Use this repair requestId in the response. Do not invent, rename, or omit a namespace.',
+              instruction: 'Re-evaluate originalCommand and regenerate the intended response as exactly one valid minified TETHER JSON object using this repair requestId. previousResponse is diagnostic only: do not quote it, copy it, or place it inside content. Return assistant_text if no tool is needed. If a tool is needed but originalCommand does not deliver an exact tether_tool_schema, return tool_schema_request for exactly one offeredTools entry; do not return tool_call yet. If originalCommand delivers tether_tool_schema, tool_call must match it exactly. JSON-escape every string; each Windows path backslash must appear as two backslashes. Return no prose or markdown.',
             }),
           })
           operation.frameIndex += 1
@@ -142,19 +141,17 @@ export function createBrowserTurnController({
         dispatchFrame(operation)
         return
       }
+      const toolSchemaDelivered = frame.kind === 'schema' || frame.toolSchemaDelivered === true
+      if (envelope.type === 'tool_call' && operation.codexRequest.model === 'tether-compact' && !toolSchemaDelivered) {
+        queueToolSchemaFrame(operation, [{
+          ...(envelope.namespace ? { namespace: envelope.namespace } : {}),
+          name: envelope.name,
+        }])
+        return
+      }
       if (envelope.type === 'tool_schema_request') {
-        if (frame.kind === 'schema') throw coded('repeated_tool_schema_request', 'Browser requested another schema after exact schema delivery')
-        const definitions = selectDeferredToolDefinitions(operation.codexRequest.tools ?? [], envelope.tools)
-        const schemaRequestId = `${operation.requestId}.schema.0`
-        const prompt = buildDeferredToolSchemaPrompt({
-          requestId: schemaRequestId,
-          originalRequestId: operation.requestId,
-          definitions,
-        })
-        if (prompt.length > 60000) throw coded('deferred_tool_schema_too_large', 'Selected tool schema exceeds the browser message limit')
-        operation.frames.push({ requestId: schemaRequestId, kind: 'schema', prompt })
-        operation.frameIndex += 1
-        dispatchFrame(operation)
+        if (toolSchemaDelivered) throw coded('repeated_tool_schema_request', 'Browser requested another schema after exact schema delivery')
+        queueToolSchemaFrame(operation, envelope.tools)
         return
       }
       const previousConversation = await stateStore.get(operation.conversationKey)
@@ -217,6 +214,20 @@ export function createBrowserTurnController({
     })
   }
 
+  function queueToolSchemaFrame(operation, requestedTools) {
+    const definitions = selectDeferredToolDefinitions(operation.codexRequest.tools ?? [], requestedTools)
+    const schemaRequestId = `${operation.requestId}.schema.0`
+    const prompt = buildDeferredToolSchemaPrompt({
+      requestId: schemaRequestId,
+      originalRequestId: operation.requestId,
+      definitions,
+    })
+    if (prompt.length > 60000) throw coded('deferred_tool_schema_too_large', 'Selected tool schema exceeds the browser message limit')
+    operation.frames.push({ requestId: schemaRequestId, kind: 'schema', prompt })
+    operation.frameIndex += 1
+    dispatchFrame(operation)
+  }
+
   function rejectOperation(operation, error) {
     if (!operations.has(operation.baseKey)) return
     operations.delete(operation.baseKey)
@@ -271,6 +282,12 @@ function correlationKey(extensionInstanceId, browserSessionId, requestId) {
 function remember(map, key, value, limit) {
   map.set(key, value)
   while (map.size > limit) map.delete(map.keys().next().value)
+}
+
+function offeredToolReferences(tools) {
+  return tools.flatMap((tool) => tool?.type === 'namespace'
+    ? (tool.tools ?? []).map((child) => ({ namespace: tool.name, name: child.name }))
+    : tool?.name ? [{ name: tool.name }] : [])
 }
 
 function coded(code, message) {

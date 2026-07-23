@@ -363,6 +363,66 @@ test('deferred compact tooling delivers one exact schema then continues with the
   assert.equal(sawToolResult, true)
 })
 
+test('compact tooling enforces schema delivery when a browser model calls a catalog name directly', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'tether-direct-tool-schema-'))
+  const adapter = createTetherAdapter({
+    routeResponsesToBrowser: true,
+    conversationStatePath: join(directory, 'conversations.json'),
+    logger: { error() {} },
+  })
+  const info = await adapter.start()
+  t.after(async () => { await adapter.stop(); await rm(directory, { recursive: true, force: true }) })
+  const extension = new WebSocket(info.extensionWebsocketUrl)
+  await opened(extension)
+  extension.send(JSON.stringify({
+    protocol: 'tether-extension', version: 1, type: 'hello', extensionInstanceId: 'extension-direct-tool',
+    sessions: [{ browserSessionId: 'browser-direct-tool', tabId: 13, origin: 'https://chat.example', providerId: 'example', conversationId: 'direct-tool-conversation' }],
+  }))
+  await waitFor(() => adapter.listExtensionRegistrations().length === 1)
+
+  const exactTool = {
+    type: 'function', name: 'shell_command', description: 'Runs PowerShell safely.', strict: false,
+    parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'], additionalProperties: false },
+  }
+  let schemaDelivered = false
+  extension.addEventListener('message', (event) => {
+    const message = JSON.parse(event.data)
+    if (message.type !== 'browser_request') return
+    let response
+    if (message.payload.prompt.startsWith('You are the model endpoint for a coding agent connected through TETHER.')) {
+      response = { schemaVersion: 1, type: 'assistant_text', requestId: message.requestId, content: 'TETHER_INSTALL_OK' }
+    } else {
+      const payload = browserPayload(message.payload.prompt)
+      if (payload.type === 'codex_turn') {
+        response = {
+          schemaVersion: 1, type: 'tool_call', requestId: message.requestId,
+          callId: 'call-before-schema', name: 'shell_command', arguments: { command: 'Get-Date' },
+        }
+      } else {
+        assert.equal(payload.type, 'tether_tool_schema')
+        assert.deepEqual(payload.definitions, [exactTool])
+        schemaDelivered = true
+        response = {
+          schemaVersion: 1, type: 'tool_call', requestId: message.requestId,
+          callId: 'call-after-schema', name: 'shell_command', arguments: { command: 'Get-Date' },
+        }
+      }
+    }
+    extension.send(JSON.stringify({
+      protocol: 'tether-extension', version: 1, type: 'browser_completed', requestId: message.requestId,
+      browserSessionId: message.browserSessionId, payload: { text: JSON.stringify(response) },
+    }))
+  })
+
+  const codex = new WebSocket(info.websocketUrl)
+  await opened(codex)
+  codex.send(JSON.stringify(request({ model: 'tether-compact', tools: [exactTool] })))
+  const events = await collectThroughCompletion(codex)
+  const call = events.find((event) => event.type === 'response.output_item.done').item
+  assert.equal(call.call_id, 'call-after-schema')
+  assert.equal(schemaDelivered, true)
+})
+
 test('repairs one invented deferred schema request without accepting the unavailable tool', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'tether-schema-repair-'))
   const adapter = createTetherAdapter({
@@ -414,7 +474,7 @@ test('repairs one invented deferred schema request without accepting the unavail
   assert.equal(repairSeen, true)
 })
 
-test('repairs one plain-text browser answer into the required assistant envelope', async (t) => {
+test('regenerates one invalid JSON browser answer without nesting the broken response', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'tether-envelope-repair-'))
   const adapter = createTetherAdapter({ routeResponsesToBrowser: true, conversationStatePath: join(directory, 'conversations.json'), logger: { error() {} } })
   const info = await adapter.start()
@@ -435,11 +495,13 @@ test('repairs one plain-text browser answer into the required assistant envelope
     } else {
     const payload = browserPayload(message.payload.prompt)
     if (payload.type === 'tether_install') text = JSON.stringify(payload.replyExactly)
-    else if (payload.type === 'codex_turn') text = 'ALPHA TETHER\nBETA BROWSER\nGAMMA CODEX'
+    else if (payload.type === 'codex_turn') text = '{"schemaVersion":1,"type":"assistant_text","requestId":'
     else {
       assert.equal(payload.type, 'tether_protocol_repair')
-      assert.equal(payload.previousResponse, 'ALPHA TETHER\nBETA BROWSER\nGAMMA CODEX')
-      text = JSON.stringify({ schemaVersion: 1, type: 'assistant_text', requestId: message.requestId, content: payload.previousResponse })
+      assert.equal(payload.previousResponse, '{"schemaVersion":1,"type":"assistant_text","requestId":')
+      assert.match(payload.instruction, /diagnostic only/)
+      assert.doesNotMatch(payload.instruction, /Set content to previousResponse/)
+      text = JSON.stringify({ schemaVersion: 1, type: 'assistant_text', requestId: message.requestId, content: 'recovered after invalid JSON' })
     }
     }
     extension.send(JSON.stringify({
@@ -451,7 +513,7 @@ test('repairs one plain-text browser answer into the required assistant envelope
   await opened(codex)
   codex.send(JSON.stringify(request({ model: 'tether-compact', tools: [] })))
   const events = await collectThroughCompletion(codex)
-  assert.equal(events.find((event) => event.type === 'response.output_text.delta').delta, 'ALPHA TETHER\nBETA BROWSER\nGAMMA CODEX')
+  assert.equal(events.find((event) => event.type === 'response.output_text.delta').delta, 'recovered after invalid JSON')
 })
 
 function browserPayload(prompt) {

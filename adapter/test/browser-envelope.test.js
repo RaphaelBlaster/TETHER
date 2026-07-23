@@ -61,6 +61,25 @@ test('repairs raw Windows backslashes in a speaker-prefixed tool call', () => {
   assert.equal(envelope.arguments.command, String.raw`Get-Content -LiteralPath 'C:\Users\Megh Mayur\OneDrive\Desktop\test.txt'`)
 })
 
+test('repairs raw Windows backslashes in one standalone correlated tool call', () => {
+  const response = String.raw`{"schemaVersion":1,"type":"tool_call","requestId":"current","callId":"tether-call-2","name":"shell_command","arguments":{"command":"Get-Content -LiteralPath 'C:\Users\Megh Mayur\OneDrive\Desktop\Glue Semantics.pdf'"}}`
+  const envelope = parseBrowserResponse(response, 'current', ['shell_command'])
+  assert.equal(envelope.type, 'tool_call')
+  assert.equal(envelope.requestId, 'current')
+  assert.equal(
+    envelope.arguments.command,
+    String.raw`Get-Content -LiteralPath 'C:\Users\Megh Mayur\OneDrive\Desktop\Glue Semantics.pdf'`,
+  )
+})
+
+test('does not repair a standalone raw tool call for another request', () => {
+  const response = String.raw`{"schemaVersion":1,"type":"tool_call","requestId":"wrong","callId":"tether-call-3","name":"shell_command","arguments":{"command":"Get-Content 'C:\Users\Other\test.txt'"}}`
+  assert.throws(
+    () => parseBrowserResponse(response, 'current', ['shell_command']),
+    { code: 'invalid_browser_json' },
+  )
+})
+
 test('does not repair uncorrelated tool JSON embedded in ordinary prose', () => {
   const toolCall = JSON.stringify({
     schemaVersion: 1, type: 'tool_call', callId: 'call-1',

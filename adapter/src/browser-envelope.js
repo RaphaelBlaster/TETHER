@@ -67,10 +67,19 @@ export function parseBrowserResponse(text, requestId, offeredTools = []) {
   const normalized = String(text ?? '').trim()
   if (!normalized) throw coded('invalid_browser_json', 'Browser response was empty')
   const hasSpeakerPrefix = /^[^{}\r\n]{1,80}\b(?:said|says)\s+(?=\{)/i.test(normalized)
+  const standaloneCorrelatedToolCall =
+    normalized.startsWith('{') &&
+    normalized.endsWith('}') &&
+    /"type"\s*:\s*"tool_call"/.test(normalized) &&
+    new RegExp(`"requestId"\\s*:\\s*${escapeRegExp(JSON.stringify(requestId))}`).test(normalized)
   // Some providers render a small speaker prefix (for example, "Gemini said")
   // before an otherwise valid protocol object.  Accept only a uniquely
   // correlated object; never parse an arbitrary JSON fragment as a tool call.
-  const embedded = parseJsonObjects(normalized, { repairSpeakerToolCall: hasSpeakerPrefix }).map(inferEnvelopeType)
+  // A standalone tool call with the exact current requestId is equally
+  // unambiguous, so repair raw Windows path separators there as well.
+  const embedded = parseJsonObjects(normalized, {
+    repairToolCallBackslashes: hasSpeakerPrefix || standaloneCorrelatedToolCall,
+  }).map(inferEnvelopeType)
   const matching = embedded.filter((value) => isObject(value) && value.requestId === requestId &&
     ['assistant_text', 'tool_call', 'tool_schema_request'].includes(value.type))
   if (matching.length === 1) return parseBrowserEnvelope(JSON.stringify(matching[0]), requestId, offeredTools)
@@ -104,7 +113,7 @@ function inferEnvelopeType(value) {
     : normalized
 }
 
-function parseJsonObjects(value, { repairSpeakerToolCall = false } = {}) {
+function parseJsonObjects(value, { repairToolCallBackslashes = false } = {}) {
   const text = String(value ?? '')
   const values = []
   for (let start = 0; start < text.length; start += 1) {
@@ -127,7 +136,7 @@ function parseJsonObjects(value, { repairSpeakerToolCall = false } = {}) {
         try {
           values.push(JSON.parse(candidate))
         } catch {
-          if (repairSpeakerToolCall && /"type"\s*:\s*"tool_call"/.test(candidate)) {
+          if (repairToolCallBackslashes && /"type"\s*:\s*"tool_call"/.test(candidate)) {
             try { values.push(JSON.parse(escapeRawBackslashesInJsonStrings(candidate))) } catch {}
           }
         }
@@ -141,8 +150,8 @@ function parseJsonObjects(value, { repairSpeakerToolCall = false } = {}) {
 
 // Consumer model UIs sometimes render a Windows command with single path
 // separators inside JSON. This runs only after JSON.parse failed and only for
-// a speaker-prefixed tool_call, so preserve structural quote/backslash escapes
-// while making other backslashes literal.
+// a speaker-prefixed or standalone correlated tool_call, so preserve structural
+// quote/backslash escapes while making other backslashes literal.
 function escapeRawBackslashesInJsonStrings(value) {
   let result = ''
   let quoted = false
@@ -162,6 +171,10 @@ function escapeRawBackslashesInJsonStrings(value) {
     result += character
   }
   return result
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function isOfferedTool(envelope, offeredTools) {

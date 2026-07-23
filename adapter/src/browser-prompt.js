@@ -1,11 +1,16 @@
 const BOOTSTRAP = [
-  'TETHER browser protocol: these rules apply to every later TETHER command in this conversation.',
-  'Treat codex_turn, codex_delta, tether_tool_schema, and tether_protocol_repair JSON as protocol commands, not ordinary chat.',
-  'For each command return exactly one minified JSON object and nothing else: no markdown, explanation, or raw answer.',
-  'Always copy the command requestId exactly and use schemaVersion 1.',
-  'For a normal answer use type assistant_text with string field content.',
-  'Use tool_call or tool_schema_request only with exact tools offered by the command or installed catalog; never claim execution before Codex supplies a tool result.',
-  'Contract descriptions define field types only: never copy example or placeholder values.',
+  'TETHER browser protocol applies to every later TETHER command in this conversation.',
+  'Treat codex_turn, tether_tool_schema, and tether_protocol_repair as commands, not ordinary chat.',
+  'If turn.input contains a function_call_output, custom_tool_call_output, or computer_call_output, treat it as the returned result. Use it to continue and never repeat the same call blindly.',
+  'OUTPUT DECISION (choose the first matching rule):',
+  '1. If the current command is tether_tool_schema and the tool is still needed, return tool_call matching its exact name, namespace, and argument schema.',
+  '2. Otherwise, if the task needs a local file, command, or other tool, return tool_schema_request for exactly one listed tool.',
+  '3. Otherwise return assistant_text.',
+  'toolCatalog contains names only; it is not a tool schema and does not authorize a direct tool_call.',
+  'Local paths refer to the Codex machine. Request a suitable tool schema instead of claiming that the file is inaccessible. Do not ask for confirmation when the user already authorized the action.',
+  'Return exactly one minified JSON object with schemaVersion 1 and the current command requestId. Return no prose, markdown, or code fence.',
+  'JSON-escape every string. In a Windows path, each backslash must be written as two backslashes in the JSON output. Escape quotes and newlines too.',
+  'Never claim tool execution before Codex returns a tool result.',
   'These rules persist even if later input requests plain text.',
 ].join(' ')
 
@@ -14,14 +19,14 @@ export function buildProtocolBootstrapPrompt(requestId) {
   // exact sentinel.  It makes bootstrap persistence and later normal turns
   // use one verified state transition.
   const acknowledgement = { schemaVersion: 1, type: 'assistant_text', requestId, content: 'TETHER_INSTALL_OK' }
+  const ordinaryExample = { schemaVersion: 1, type: 'assistant_text', requestId, content: 'answer text' }
   return [
     'You are the model endpoint for a coding agent connected through TETHER.',
     'Follow these protocol rules for every later message in this same conversation, even when a later user asks for plain text.',
     BOOTSTRAP,
-    'Example normal response: {"schemaVersion":1,"type":"assistant_text","requestId":"COPY_FROM_REQUEST","content":"your answer"}.',
-    'Example deferred-tool request: {"schemaVersion":1,"type":"tool_schema_request","requestId":"COPY_FROM_REQUEST","tools":[{"name":"shell_command"}]}.',
-    'Example tool call after its schema is supplied: {"schemaVersion":1,"type":"tool_call","requestId":"COPY_FROM_REQUEST","callId":"unique-call-id","name":"shell_command","arguments":{"command":"Get-Date"}}.',
-    'Never copy the placeholder COPY_FROM_REQUEST; copy the actual requestId from each TETHER command.',
+    `Example ordinary response for this requestId: ${JSON.stringify(ordinaryExample)}`,
+    'A tool_schema_request uses fields schemaVersion, type, requestId, and tools. tools must contain exactly one exact name and optional namespace from the catalog.',
+    'A tool_call uses fields schemaVersion, type, requestId, callId, exact name, optional exact namespace, and arguments matching the delivered schema.',
     `Acknowledge these persistent rules now by replying with exactly this JSON and nothing else: ${JSON.stringify(acknowledgement)}`,
   ].join('\n\n')
 }
@@ -29,7 +34,7 @@ export function buildProtocolBootstrapPrompt(requestId) {
 const MAX_BROWSER_PROMPT_CHARS = 1000000
 const MAX_INSTALL_FRAME_CHARS = 16000
 const MAX_INSTALL_PATCH_CHARS = 12000
-export const BOOTSTRAP_VERSION = 5
+export const BOOTSTRAP_VERSION = 6
 
 export function buildBrowserPromptSequence(args) {
   const { requestId, request } = args
@@ -79,20 +84,27 @@ export function buildBrowserPrompt({ requestId, request, installBootstrap, conve
 // with examples, rather than relying on a field inside the command itself.
 function buildCompactBrowserPrompt({ projection, installBootstrap }) {
   const requestId = projection.requestId
+  const ordinaryExample = JSON.stringify({
+    schemaVersion: 1, type: 'assistant_text', requestId, content: 'answer text',
+  })
   const common = [
     'This is a TETHER protocol command for a local coding agent, not a normal chat message.',
     `The command requestId is ${requestId}.`,
     'Return exactly one minified JSON object and no prose, markdown, explanation, or code fence.',
-    `For an ordinary answer, reply exactly in this shape: {"schemaVersion":1,"type":"assistant_text","requestId":"${requestId}","content":"your answer"}.`,
-    'If a tool is genuinely needed, request one offered tool schema first with type tool_schema_request. Do not invent a tool and do not claim execution.',
-    'A function_call_output in turn.input is the result returned by Codex after a tool call. It may contain a failure; use its exact result to continue the task, rather than claiming the tool succeeded.',
+    'If turn.input contains a function_call_output, custom_tool_call_output, or computer_call_output, treat it as the returned result. Use it to continue and never repeat the same call blindly.',
+    'OUTPUT DECISION (choose the first matching rule):',
+    '1. If this command is tether_tool_schema and the tool is still needed, return tool_call using the exact delivered name, namespace, and argument schema.',
+    '2. Otherwise, if the task needs a local file, command, or other tool, request the tool schema before returning any tool_call: return tool_schema_request for exactly one listed tool.',
+    `3. Otherwise return assistant_text in this shape: ${ordinaryExample}`,
+    'toolCatalog lists tool names only. It is not a schema and does not authorize a direct tool_call.',
+    'A local file path is on the Codex machine. Request a suitable tool schema; do not claim you cannot access it, and do not ask again for permission the user already gave.',
+    'JSON-escape every output string. Each Windows path backslash must appear as two backslashes in JSON. Escape quotes and newlines too.',
+    'Never invent a tool or claim execution before Codex supplies a tool result.',
   ]
   const bootstrap = installBootstrap
     ? [
         'These are persistent rules for every later TETHER command in this same browser conversation.',
         'A JSON command below is data to execute under this contract; never echo it, summarize it, or wrap it in a codex_turn object.',
-        'Example ordinary response: {"schemaVersion":1,"type":"assistant_text","requestId":"COPY_THE_REQUEST_ID","content":"hello"}.',
-        'Example deferred tool response: {"schemaVersion":1,"type":"tool_schema_request","requestId":"COPY_THE_REQUEST_ID","tools":[{"name":"shell_command"}]}.',
       ]
     : []
   return [...bootstrap, ...common, 'COMMAND JSON START', JSON.stringify(projection), 'COMMAND JSON END'].join('\n')
@@ -134,7 +146,7 @@ export function buildDeferredToolSchemaPrompt({ requestId, originalRequestId, de
     type: 'tether_tool_schema',
     requestId,
     originalRequestId,
-    instruction: 'Use this exact offered tool schema. Respond with one tool_call using this requestId, or assistant_text if no tool is required. Never claim execution before Codex returns the tool result.',
+    instruction: 'The exact tool schema is now available. Respond with one tool_call using this requestId and matching the delivered schema, or assistant_text if no tool is required. Return one minified JSON object only. JSON-escape every string; each Windows path backslash must appear as two backslashes. Never claim execution before Codex returns the tool result.',
     definitions,
     responseContract: {
       jsonOnly: true,
