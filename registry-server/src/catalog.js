@@ -28,7 +28,7 @@ export function createRegistryCatalog({
       modifiedAt: metadata.mtimeMs,
       loadedAt: now(),
     }
-    database.recordPublication({
+    await database.recordPublication({
       registryVersion: index.registryVersion,
       generatedAt: index.generatedAt,
       indexSha256: sha256,

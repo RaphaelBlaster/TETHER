@@ -110,8 +110,8 @@ export function createRegistryServer({
           return
         }
 
-        const aggregate = database.recordDrift(report)
-        const maintenance = database.ensureMaintenanceJob(aggregate, config.maintenanceThreshold)
+        const aggregate = await database.recordDrift(report)
+        const maintenance = await database.ensureMaintenanceJob(aggregate, config.maintenanceThreshold)
         if (maintenance.created) {
           await operationalStore.enqueueMaintenanceJob(maintenance.job)
         }

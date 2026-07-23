@@ -7,6 +7,9 @@ export function loadConfig(environment = process.env) {
     databasePath: resolve(environment.TETHER_DB_PATH || './state/tether-registry.sqlite'),
     registryRoot: resolve(environment.TETHER_REGISTRY_ROOT || '../provider-adapters'),
     redisUrl: environment.REDIS_URL || null,
+    mongodbUri: environment.MONGODB_URI || null,
+    mongodbDatabaseName: databaseName(environment.MONGODB_DB_NAME || 'tether_registry'),
+    durableStoreRequired: environment.DURABLE_STORE_REQUIRED === 'true',
     trustProxy: environment.TRUST_PROXY === 'true',
     rateLimit: integer(environment.DRIFT_RATE_LIMIT, 60, { min: 1, max: 10_000 }),
     rateWindowSeconds: integer(environment.DRIFT_RATE_WINDOW_SECONDS, 60, { min: 1, max: 86_400 }),
@@ -15,6 +18,13 @@ export function loadConfig(environment = process.env) {
     rateLimitSalt: environment.RATE_LIMIT_SALT || 'tether-development-only',
     maxRequestBytes: 2 * 1024,
   })
+}
+
+function databaseName(value) {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(value)) {
+    throw new Error('MONGODB_DB_NAME must contain only letters, numbers, underscores, or hyphens')
+  }
+  return value
 }
 
 function integer(value, fallback, { min, max }) {

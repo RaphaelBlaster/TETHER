@@ -2,10 +2,19 @@ import { createRegistryServer } from './app.js'
 import { createRegistryCatalog } from './catalog.js'
 import { loadConfig } from './config.js'
 import { createRegistryDatabase } from './database.js'
+import { createMongoRegistryDatabase } from './mongodb-database.js'
 import { createOperationalStore } from './operational-store.js'
 
 const config = loadConfig()
-const database = createRegistryDatabase({ path: config.databasePath })
+if (config.durableStoreRequired && !config.mongodbUri) {
+  throw new Error('MONGODB_URI is required when DURABLE_STORE_REQUIRED=true')
+}
+const database = config.mongodbUri
+  ? await createMongoRegistryDatabase({
+      uri: config.mongodbUri,
+      databaseName: config.mongodbDatabaseName,
+    })
+  : createRegistryDatabase({ path: config.databasePath })
 const operationalStore = await createOperationalStore({
   redisUrl: config.redisUrl,
 })
@@ -30,7 +39,7 @@ async function stop() {
   stopping = true
   await server.stop()
   await operationalStore.close()
-  database.close()
+  await database.close()
 }
 
 process.on('SIGINT', stop)

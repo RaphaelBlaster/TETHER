@@ -1,37 +1,26 @@
 services:
-  - type: keyvalue
-    name: tether-registry-operations
-    plan: free
-    region: singapore
-    ipAllowList: []
-    maxmemoryPolicy: allkeys-lru
-    persistenceMode: off
-
   - type: web
     name: tether-provider-registry
     runtime: node
-    plan: starter
+    plan: free
     region: singapore
     buildCommand: npm --prefix registry-server ci && npm run registry:build
     startCommand: npm --prefix registry-server start
     healthCheckPath: /healthz
-    disk:
-      name: tether-registry-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: NODE_VERSION
         value: 24.14.1
-      - key: TETHER_DB_PATH
-        value: /var/data/tether-registry.sqlite
       - key: TETHER_REGISTRY_ROOT
         value: /opt/render/project/src/provider-adapters
       - key: TRUST_PROXY
         value: "true"
+      - key: DURABLE_STORE_REQUIRED
+        value: "true"
+      - key: MONGODB_DB_NAME
+        value: tether_registry
+      - key: MONGODB_URI
+        sync: false
       - key: REDIS_URL
-        fromService:
-          type: keyvalue
-          name: tether-registry-operations
-          property: connectionString
+        sync: false
       - key: RATE_LIMIT_SALT
         generateValue: true
