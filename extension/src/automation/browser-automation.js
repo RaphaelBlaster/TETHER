@@ -25,6 +25,7 @@ import {
   createStabilityTracker,
   isUserPromptEcho,
 } from './response-observer.js';
+import { buildAdapterPageValidationScript } from '../provider-adapter-registry.js';
 
 const ENGINE = 'direct-cdp';
 
@@ -71,7 +72,7 @@ function buildVerifyPromptScript({ composerFp, composerSelector, prompt }) {
 /**
  * @param {object} deps
  */
-export function createBrowserAutomation({ transport, calibrationStore } = {}) {
+export function createBrowserAutomation({ transport, calibrationStore, adapterRegistry } = {}) {
   const cdp = createCdpClient(transport);
 
   /** @type {Map<string, { promise: Promise<any>, result?: any, error?: any, status: string }>} */
@@ -187,6 +188,38 @@ export function createBrowserAutomation({ transport, calibrationStore } = {}) {
 
         const provider = resolveProvider(providerId, origin);
         const calibration = await getCalibration(origin);
+        let adapter = adapterRegistry
+          ? await adapterRegistry.resolve(origin, { refresh: true })
+          : null;
+        if (adapter && adapter.source !== 'packaged') {
+          const validation = await cdp.evaluate(
+            tabId,
+            buildAdapterPageValidationScript(adapter)
+          );
+          if (!validation?.valid) {
+            adapter = await adapterRegistry.reject(origin, adapter.adapterVersion);
+          }
+        }
+        const calibratedComposerSelectors = fingerprintSelectors(calibration?.composer);
+        const calibratedSendSelectors = fingerprintSelectors(calibration?.send);
+        const response = responseConfiguration(calibration?.responseCalibration, adapter);
+        const composerHints = uniqueSelectors(
+          calibratedComposerSelectors,
+          adapter?.composer?.selectors,
+          provider?.composerHints
+        );
+        const submitHints = uniqueSelectors(
+          calibratedSendSelectors,
+          adapter?.send?.selectors,
+          provider?.submitHints
+        );
+        const stopHints = uniqueSelectors(
+          adapter?.completion?.stopSelectors,
+          provider?.stopHints
+        );
+        const progressHints = uniqueSelectors(
+          adapter?.completion?.progressSelectors
+        );
 
         stage(OperationStage.CAPTURING_BASELINE);
         const baseline = await cdp.evaluate(
@@ -194,6 +227,7 @@ export function createBrowserAutomation({ transport, calibrationStore } = {}) {
           buildBaselineScript({
             userSelectors: provider?.userHints || [],
             assistantSelectors: provider?.assistantHints || [],
+            response,
           })
         );
         throwIfAborted(linked);
@@ -202,10 +236,12 @@ export function createBrowserAutomation({ transport, calibrationStore } = {}) {
         const discovery = await cdp.evaluate(
           tabId,
           buildDiscoveryScript({
-            composerHints: provider?.composerHints || [],
-            submitHints: provider?.submitHints || [],
+            composerHints,
+            submitHints,
             calibratedComposer: calibration?.composer || null,
             calibratedSend: calibration?.send || null,
+            calibratedComposerSelectors,
+            calibratedSendSelectors,
           })
         );
 
@@ -319,10 +355,12 @@ export function createBrowserAutomation({ transport, calibrationStore } = {}) {
           const rediscovery = await cdp.evaluate(
             tabId,
             buildDiscoveryScript({
-              composerHints: provider?.composerHints || [],
-              submitHints: provider?.submitHints || [],
+              composerHints,
+              submitHints,
               calibratedComposer: calibration?.composer || null,
               calibratedSend: calibration?.send || null,
+              calibratedComposerSelectors,
+              calibratedSendSelectors,
             })
           );
           sendMeta = rediscovery?.send || sendMeta;
@@ -383,9 +421,13 @@ export function createBrowserAutomation({ transport, calibrationStore } = {}) {
           const evidence = await cdp.evaluate(
             tabId,
             buildSubmissionEvidenceScript({
-              baseline,
+              baseline: {
+                ...baseline,
+                composerText: prompt,
+                composerLength: prompt.length,
+              },
               promptPreview: prompt.slice(0, 200),
-              stopHints: provider?.stopHints || [],
+              stopHints,
             })
           );
           if (evidence?.submitted) {
@@ -412,7 +454,9 @@ export function createBrowserAutomation({ transport, calibrationStore } = {}) {
             tabId,
             buildExtractAssistantScript({
               baseline,
-              stopHints: provider?.stopHints || [],
+              stopHints,
+              progressHints,
+              response,
             })
           );
           lastExtract = extract;
@@ -537,3 +581,37 @@ export function createBrowserAutomation({ transport, calibrationStore } = {}) {
 }
 
 export { ENGINE };
+
+function fingerprintSelectors(fingerprint) {
+  if (!fingerprint) return [];
+  return uniqueSelectors([
+    fingerprint.primarySelector,
+    ...(fingerprint.fallbackSelectors || []),
+  ]);
+}
+
+function responseConfiguration(responseCalibration, adapter) {
+  const calibrated = responseCalibration
+    ? {
+        rootSelectors: fingerprintSelectors(responseCalibration.conversationRoot),
+        turnSelectors: fingerprintSelectors(responseCalibration.assistantTurn),
+        contentSelectors: fingerprintSelectors(responseCalibration.assistantContent),
+      }
+    : null;
+  const remote = adapter?.response ?? null;
+  if (!calibrated && !remote) return null;
+  return {
+    rootSelectors: calibrated?.rootSelectors ?? [],
+    turnSelectors: calibrated?.turnSelectors?.length
+      ? calibrated.turnSelectors
+      : remote?.turnSelectors ?? [],
+    contentSelectors: calibrated?.contentSelectors?.length
+      ? calibrated.contentSelectors
+      : remote?.contentSelectors ?? [],
+    excludeSelectors: remote?.excludeSelectors ?? [],
+  };
+}
+
+function uniqueSelectors(...groups) {
+  return [...new Set(groups.flat().filter(Boolean))];
+}

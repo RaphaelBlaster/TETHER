@@ -37,6 +37,8 @@ elsewhere never steals or mutates that session.
 ## Storage ownership
 
 - `chrome.storage.local`: durable provider calibration profiles keyed by origin.
+- `chrome.storage.local`: bounded last-known-good declarative provider adapter
+  versions keyed by origin (`providerAdapterCacheV1`).
 - `chrome.storage.session`: explicitly activated browser-session records and active-operation
   recovery metadata.
 - JavaScript globals: live objects only, including the WebSocket and DOM references.

@@ -5,15 +5,27 @@
 export function buildBaselineScript({
   userSelectors = [],
   assistantSelectors = [],
+  response = null,
 } = {}) {
   return `(() => {
     const userSelectors = ${JSON.stringify(userSelectors)};
     const assistantSelectors = ${JSON.stringify(assistantSelectors)};
+    const response = ${JSON.stringify(response)};
+
+    function root() {
+      for (const selector of response?.rootSelectors || []) {
+        try {
+          const element = document.querySelector(selector);
+          if (element) return element;
+        } catch (_) {}
+      }
+      return document;
+    }
 
     function count(sels) {
       for (const s of sels || []) {
         try {
-          const n = document.querySelectorAll(s).length;
+          const n = root().querySelectorAll(s).length;
           if (n) return n;
         } catch (_) {}
       }
@@ -23,7 +35,7 @@ export function buildBaselineScript({
     function texts(sels, limit = 50) {
       for (const s of sels || []) {
         try {
-          const nodes = [...document.querySelectorAll(s)];
+          const nodes = [...root().querySelectorAll(s)];
           if (nodes.length) {
             return nodes.slice(-limit).map((n, i) => ({
               i,
@@ -51,7 +63,9 @@ export function buildBaselineScript({
     const userDefault = ['[data-message-author-role="user"]', '[data-turn="user"]'];
     const asstDefault = ['[data-message-author-role="assistant"]', '[data-turn="assistant"]', 'model-response'];
     const uSels = userSelectors.length ? userSelectors : userDefault;
-    const aSels = assistantSelectors.length ? assistantSelectors : asstDefault;
+    const aSels = response?.turnSelectors?.length
+      ? response.turnSelectors
+      : assistantSelectors.length ? assistantSelectors : asstDefault;
     const cText = composerText();
 
     return {
@@ -72,15 +86,29 @@ export function buildBaselineScript({
 export function buildExtractAssistantScript({
   baseline,
   stopHints = [],
+  progressHints = [],
+  response = null,
 }) {
   return `(() => {
     const baseline = ${JSON.stringify(baseline || {})};
     const stopHints = ${JSON.stringify(stopHints)};
+    const progressHints = ${JSON.stringify(progressHints)};
+    const response = ${JSON.stringify(response)};
+
+    function root() {
+      for (const selector of response?.rootSelectors || []) {
+        try {
+          const element = document.querySelector(selector);
+          if (element) return element;
+        } catch (_) {}
+      }
+      return document;
+    }
 
     function nodesFor(sels) {
       for (const s of sels || []) {
         try {
-          const nodes = [...document.querySelectorAll(s)];
+          const nodes = [...root().querySelectorAll(s)];
           if (nodes.length) return nodes;
         } catch (_) {}
       }
@@ -89,11 +117,28 @@ export function buildExtractAssistantScript({
 
     function cleanText(el) {
       if (!el) return '';
-      const clone = el.cloneNode(true);
-      clone.querySelectorAll(
-        'button, nav, svg, [data-testid*="copy"], [aria-label*="Copy"], [aria-label*="Good"], [aria-label*="Bad"], [class*="feedback"]'
-      ).forEach((n) => n.remove());
-      return (clone.innerText || clone.textContent || '').replace(/\\u00a0/g, ' ').trim();
+      let regions = [el];
+      for (const selector of response?.contentSelectors || []) {
+        try {
+          const matches = [...el.querySelectorAll(selector)];
+          if (matches.length) {
+            regions = matches;
+            break;
+          }
+        } catch (_) {}
+      }
+      return regions.map((region) => {
+        const clone = region.cloneNode(true);
+        const exclusions = [
+          'button', 'nav', 'svg', '[data-testid*="copy"]', '[aria-label*="Copy"]',
+          '[aria-label*="Good"]', '[aria-label*="Bad"]', '[class*="feedback"]',
+          ...(response?.excludeSelectors || []),
+        ];
+        for (const selector of exclusions) {
+          try { clone.querySelectorAll(selector).forEach((n) => n.remove()); } catch (_) {}
+        }
+        return (clone.innerText || clone.textContent || '').replace(/\\u00a0/g, ' ').trim();
+      }).filter(Boolean).join('\\n').trim();
     }
 
     function any(sels) {
@@ -105,7 +150,7 @@ export function buildExtractAssistantScript({
       return false;
     }
 
-    const asstSels = baseline.assistantSelectors || [
+    const asstSels = response?.turnSelectors?.length ? response.turnSelectors : baseline.assistantSelectors || [
       '[data-message-author-role="assistant"]',
       '[data-turn="assistant"]',
       'model-response',
@@ -139,7 +184,7 @@ export function buildExtractAssistantScript({
     const baselineSet = new Set((baseline.assistantTexts || []).map((t) => t.text));
     const isOld = baselineSet.has(text) && nodes.length <= prevCount;
 
-    const streaming = any(stopSels);
+    const streaming = any(stopSels.concat(progressHints));
 
     return {
       found: Boolean(target) && !isOld && text.length > 0,

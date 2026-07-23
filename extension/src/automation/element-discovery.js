@@ -91,6 +91,8 @@ export function buildDiscoveryScript({
   submitHints = [],
   calibratedComposer = null,
   calibratedSend = null,
+  calibratedComposerSelectors = [],
+  calibratedSendSelectors = [],
 } = {}) {
   const payload = {
     composerHints,
@@ -99,6 +101,8 @@ export function buildDiscoveryScript({
     genericSubmit: genericSubmitSelectors(),
     calibratedComposer,
     calibratedSend,
+    calibratedComposerSelectors,
+    calibratedSendSelectors,
   };
 
   // Stringified function body for evaluate.
@@ -221,11 +225,15 @@ export function buildDiscoveryScript({
 
     const hintComposerEls = new Set(queryAll(cfg.composerHints));
     const hintSendEls = new Set(queryAll(cfg.submitHints));
+    const calibratedComposerEls = new Set(queryAll(cfg.calibratedComposerSelectors));
+    const calibratedSendEls = new Set(queryAll(cfg.calibratedSendSelectors));
     const composerEls = unique([
+      ...calibratedComposerEls,
       ...hintComposerEls,
       ...queryAll(cfg.genericComposer),
     ]);
     const sendEls = unique([
+      ...calibratedSendEls,
       ...hintSendEls,
       ...queryAll(cfg.genericSubmit),
       ...[...document.querySelectorAll('button, [role="button"], input[type="submit"]')],
@@ -264,7 +272,7 @@ export function buildDiscoveryScript({
         editable,
         focusable: typeof el.focus === 'function',
         providerHint: hintComposerEls.has(el),
-        calibrated: matchesFingerprint(el, cfg.calibratedComposer),
+        calibrated: calibratedComposerEls.has(el) || matchesFingerprint(el, cfg.calibratedComposer),
         searchLike: SEARCH_LIKE.test(labelBlob),
         inSidePanel: inExtensionUi(el),
         area: r.area,
@@ -302,7 +310,7 @@ export function buildDiscoveryScript({
         ariaDisabled: el.getAttribute('aria-disabled') === 'true',
         enabled: !disabled,
         providerHint: hintSendEls.has(el),
-        calibrated: matchesFingerprint(el, cfg.calibratedSend),
+        calibrated: calibratedSendEls.has(el) || matchesFingerprint(el, cfg.calibratedSend),
         inSidePanel: inExtensionUi(el),
         nearComposer: false,
         centerX: r.centerX,

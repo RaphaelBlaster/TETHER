@@ -9,7 +9,7 @@ import {
 import { registerSidePanelConnection } from './calibration/panel-lifecycle.js'
 import { inspectCalibrationProfile } from './calibration/profile-schema.js'
 import { createCalibrationStartCoordinator } from './calibration/start-coordinator.js'
-import { inspectSite } from './provider-registry.js'
+import { inspectSite, PROVIDERS } from './provider-registry.js'
 import { createTabPanelController } from './tab-panel-controller.js'
 import { createInjectionCoordinator } from './injection/injection-coordinator.js'
 import { createExtractionCoordinator } from './extraction/extraction-coordinator.js'
@@ -23,6 +23,10 @@ import {
   ACTIVE_RESPONSE_CALIBRATIONS_KEY,
   createResponseCalibrationSession,
 } from './response-calibration/response-calibration-session.js'
+import {
+  createPackagedProviderManifests,
+  createProviderAdapterRegistry,
+} from './provider-adapter-registry.js'
 
 const TRANSPORT_MODE_KEY = 'tetherTransportMode'
 const TETHER_THEME_KEY = 'tetherTheme'
@@ -134,11 +138,17 @@ const panelReady = sessionReady.then(async (sessions) => {
   await tabPanels.initialize(sessions, activeTabs)
 })
 const lifecycleReady = Promise.all([sessionReady, calibrationReady, responseCalibrationReady, panelReady])
+const providerAdapters = createProviderAdapterRegistry({
+  packagedManifests: createPackagedProviderManifests(PROVIDERS),
+  storage: chrome.storage.local,
+})
 // The adapter path deliberately uses the same self-contained direct-CDP
 // pipeline that proved reliable in the replacement extension. It does not
 // depend on the legacy content-script selector/extraction flow.
 const browserAutomation = createBrowserAutomation({
   transport: createDebuggerTransport(),
+  calibrationStore: { get: async (origin) => (await loadCalibrationProfiles())[origin] ?? null },
+  adapterRegistry: providerAdapters,
 })
 
 async function extensionRegistration() {

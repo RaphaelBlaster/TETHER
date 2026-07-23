@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <body>
+    <main data-testid="tinker-conversation">
+      <article data-fixture-turn="user">
+        <p>TETHER user prompt that must never be returned</p>
+      </article>
+      <article data-fixture-turn="thought">
+        <div data-slot="collapsible">Thought: private reasoning that must never be returned</div>
+      </article>
+      <article data-fixture-turn="assistant">
+        <button aria-label="View raw">View raw</button>
+        <button aria-label="Copy request ID">Copy request ID</button>
+        <p>TINKER_FINAL_ANSWER_ONLY</p>
+      </article>
+    </main>
+    <form>
+      <textarea
+        aria-label="Message"
+        placeholder="Start typing..."
+        class="tinker-playground-composer-input"
+      ></textarea>
+      <button aria-label="Send message">Send</button>
+      <button aria-label="Stop generating">Stop</button>
+      <div role="status">Response in progress</div>
+    </form>
+  </body>
+</html>
