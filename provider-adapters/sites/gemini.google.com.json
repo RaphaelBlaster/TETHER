@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "origin": "https://gemini.google.com",
+  "adapterVersion": 1,
+  "engineVersion": 1,
+  "composer": {
+    "selectors": [
+      "div.ql-editor[contenteditable=\"true\"]",
+      "rich-textarea [contenteditable=\"true\"]",
+      "[contenteditable=\"true\"][aria-label*=\"prompt\" i]",
+      "[contenteditable=\"true\"][aria-label*=\"Enter\" i]",
+      "div[contenteditable=\"true\"]"
+    ]
+  },
+  "send": {
+    "selectors": [
+      "button[aria-label*=\"Send\" i]",
+      "button.send-button",
+      "button[mattooltip*=\"Send\" i]",
+      "button[type=\"submit\"]"
+    ]
+  },
+  "response": {
+    "turnSelectors": [
+      "model-response",
+      ".model-response-text",
+      "[data-message-author-role=\"model\"]",
+      ".response-container"
+    ],
+    "contentSelectors": [],
+    "excludeSelectors": []
+  },
+  "completion": {
+    "stopSelectors": [
+      "button[aria-label*=\"Stop\" i]",
+      "button[aria-label*=\"Cancel\" i]"
+    ],
+    "progressSelectors": []
+  }
+}

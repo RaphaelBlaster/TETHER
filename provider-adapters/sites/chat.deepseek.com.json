@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "origin": "https://chat.deepseek.com",
+  "adapterVersion": 1,
+  "engineVersion": 1,
+  "composer": {
+    "selectors": [
+      "textarea",
+      "[contenteditable=\"true\"]",
+      "textarea#chat-input",
+      ".chat-input textarea"
+    ]
+  },
+  "send": {
+    "selectors": [
+      "button[type=\"submit\"]",
+      "div[role=\"button\"][aria-label*=\"Send\" i]",
+      "button[aria-label*=\"Send\" i]",
+      ".send-button"
+    ]
+  },
+  "response": {
+    "turnSelectors": [
+      ".ds-markdown",
+      ".message-assistant",
+      "[class*=\"assistant\"]"
+    ],
+    "contentSelectors": [],
+    "excludeSelectors": []
+  },
+  "completion": {
+    "stopSelectors": [
+      "button[aria-label*=\"Stop\" i]"
+    ],
+    "progressSelectors": []
+  }
+}

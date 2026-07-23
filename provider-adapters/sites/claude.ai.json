@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "origin": "https://claude.ai",
+  "adapterVersion": 1,
+  "engineVersion": 1,
+  "composer": {
+    "selectors": [
+      "div[contenteditable=\"true\"].ProseMirror",
+      "div[contenteditable=\"true\"][translate=\"no\"]",
+      "fieldset [contenteditable=\"true\"]",
+      "[contenteditable=\"true\"]"
+    ]
+  },
+  "send": {
+    "selectors": [
+      "button[aria-label=\"Send Message\"]",
+      "button[aria-label*=\"Send\" i]",
+      "button[type=\"submit\"]"
+    ]
+  },
+  "response": {
+    "turnSelectors": [
+      "[data-is-streaming]",
+      ".font-claude-message",
+      "[data-test-render-count]"
+    ],
+    "contentSelectors": [],
+    "excludeSelectors": []
+  },
+  "completion": {
+    "stopSelectors": [
+      "button[aria-label*=\"Stop\" i]",
+      "button[aria-label*=\"Interrupt\" i]"
+    ],
+    "progressSelectors": []
+  }
+}

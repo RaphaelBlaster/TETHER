@@ -17,9 +17,11 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js && npm --prefix adapter test",
+    "test": "node --test test/*.test.js && npm --prefix adapter test && npm run registry:test",
     "pack:check": "npm pack --dry-run",
-    "extension:build": "npm --prefix extension run build"
+    "extension:build": "npm --prefix extension run build",
+    "registry:build": "node provider-adapters/scripts/build-index.mjs",
+    "registry:test": "npm --prefix registry-server test"
   },
   "engines": {
     "node": ">=18"

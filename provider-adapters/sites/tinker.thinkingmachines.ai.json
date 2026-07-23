@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "origin": "https://tinker.thinkingmachines.ai",
+  "adapterVersion": 1,
+  "engineVersion": 1,
+  "composer": {
+    "selectors": [
+      "textarea[aria-label=\"Message\"]"
+    ]
+  },
+  "send": {
+    "selectors": [
+      "button[aria-label=\"Send message\"]"
+    ]
+  },
+  "response": {
+    "turnSelectors": [
+      "article:has(button[aria-label=\"View raw\"]):has(button[aria-label=\"Copy request ID\"])"
+    ],
+    "contentSelectors": [
+      "p"
+    ],
+    "excludeSelectors": [
+      "[data-slot=\"collapsible\"]"
+    ]
+  },
+  "completion": {
+    "stopSelectors": [
+      "button[aria-label=\"Stop generating\"]"
+    ],
+    "progressSelectors": [
+      "[role=\"status\"]"
+    ]
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "registryVersion": 1,
+  "generatedAt": "2026-07-23T11:23:31.768Z",
+  "providers": {
+    "chat.deepseek.com": {
+      "origin": "https://chat.deepseek.com",
+      "adapterVersion": 1,
+      "url": "./sites/chat.deepseek.com.json",
+      "sha256": "f04d52d484a024fc357d94a7c19261fb16f10ed518358bdf8ab617d06d467545"
+    },
+    "chat.openai.com": {
+      "origin": "https://chat.openai.com",
+      "adapterVersion": 1,
+      "url": "./sites/chat.openai.com.json",
+      "sha256": "308db37c8a2fd5c101beecd5d9b87b689e74390e3d3fb5dd3e33c924d8139b91"
+    },
+    "chatgpt.com": {
+      "origin": "https://chatgpt.com",
+      "adapterVersion": 1,
+      "url": "./sites/chatgpt.com.json",
+      "sha256": "b5187d75b76ba4d3ab4ed27bdf454ae60fcc0087166ba511a01cfd3e72b6cb01"
+    },
+    "claude.ai": {
+      "origin": "https://claude.ai",
+      "adapterVersion": 1,
+      "url": "./sites/claude.ai.json",
+      "sha256": "93d681049cb5ed6a92b6708fb7615573079c72f28e137ee6b97632d0924cd3af"
+    },
+    "gemini.google.com": {
+      "origin": "https://gemini.google.com",
+      "adapterVersion": 1,
+      "url": "./sites/gemini.google.com.json",
+      "sha256": "bcd17018815156b367096d17d68b549419c9fc21b1131928f0ece4cee3299482"
+    },
+    "tinker.thinkingmachines.ai": {
+      "origin": "https://tinker.thinkingmachines.ai",
+      "adapterVersion": 1,
+      "url": "./sites/tinker.thinkingmachines.ai.json",
+      "sha256": "62778f357816ff1ae6e832fb4484f510aeeeb02c21f75b156c1ecefdc9941d7f"
+    }
+  }
+}
