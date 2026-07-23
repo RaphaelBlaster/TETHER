@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="TETHER turns an authenticated browser chat into a private, tab-bound endpoint for coding agents.">
+    <meta name="theme-color" content="#171714">
+    <title>TETHER — Keep the thread.</title>
+    <link rel="icon" href="/tether-logo.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/site.css">
+    <script src="/site.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="TETHER home">
+        <img src="/tether-logo.svg" width="36" height="36" alt="">
+        <span>TETHER</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#modes">Modes</a>
+        <a href="#install">Install</a>
+        <a href="#architecture">Architecture</a>
+      </nav>
+      <div class="header-actions">
+        <button class="theme-toggle" type="button" aria-label="Toggle color theme" aria-pressed="false">
+          <span aria-hidden="true">◐</span>
+        </button>
+        <a class="header-github" href="https://github.com/RaphaelBlaster/TETHER">GitHub <span aria-hidden="true">↗</span></a>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="live-dot"></span> Local-first browser routing</p>
+          <p class="wordmark" aria-hidden="true">TET<span>H</span>ER</p>
+          <h1 id="hero-title">Keep the thread.<br><em>Change the harness.</em></h1>
+          <p class="hero-lede">Turn the AI conversation already open in your browser into a private, tab-bound endpoint for coding agents—without exporting the thread or surrendering the session.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#install">Install TETHER <span aria-hidden="true">→</span></a>
+            <a class="button button-secondary" href="https://github.com/RaphaelBlaster/TETHER">View source</a>
+          </div>
+          <ul class="hero-proof" aria-label="Key properties">
+            <li>Chrome MV3</li>
+            <li>Loopback bridge</li>
+            <li>Provider-aware</li>
+          </ul>
+        </div>
+
+        <div class="route-panel" aria-label="TETHER connection diagram">
+          <div class="route-panel__topline">
+            <span>Active route</span>
+            <span class="status-pill" id="registry-status"><i></i><b>Checking registry</b></span>
+          </div>
+          <div class="route-stage">
+            <div class="route-node route-node--harness">
+              <span>01</span>
+              <strong>YOUR HARNESS</strong>
+              <small>Codex · OpenCode</small>
+            </div>
+            <div class="route-line route-line--one"><i></i></div>
+            <div class="route-node route-node--tether">
+              <img src="/tether-logo.svg" width="46" height="46" alt="">
+              <strong>LOCAL TETHER</strong>
+              <small>127.0.0.1</small>
+            </div>
+            <div class="route-line route-line--two"><i></i></div>
+            <div class="route-node route-node--browser">
+              <span>03</span>
+              <strong>BROWSER CHAT</strong>
+              <small>Authenticated tab</small>
+            </div>
+          </div>
+          <div class="route-panel__footer">
+            <span>Prompts stay on your route</span>
+            <strong>One continuous endpoint</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="manifest-strip" aria-label="Live registry information">
+        <p>Provider registry <strong id="registry-version">v—</strong></p>
+        <div class="provider-list" id="provider-list" aria-live="polite">
+          <span>Loading published providers…</span>
+        </div>
+        <a href="/v1/adapters/index.json">Inspect JSON <span aria-hidden="true">↗</span></a>
+      </section>
+
+      <section class="section modes-section" id="modes" aria-labelledby="modes-title">
+        <div class="section-heading">
+          <p class="eyebrow">Three independent routes</p>
+          <h2 id="modes-title">Choose how you<br>keep the thread.</h2>
+          <p>Each mode has one job. Use them independently; combine them only when your workflow needs it.</p>
+        </div>
+        <div class="mode-grid">
+          <article class="mode-card mode-card--featured">
+            <div class="mode-card__number">01</div>
+            <div class="mode-card__badge">Available now</div>
+            <h3>CLI</h3>
+            <p>Connect Codex to one selected browser conversation through the embedded local Responses adapter.</p>
+            <ul>
+              <li>One command launch</li>
+              <li>Tab-bound ownership</li>
+              <li>Correlated browser turns</li>
+            </ul>
+            <a href="#install">Install CLI <span aria-hidden="true">→</span></a>
+          </article>
+
+          <article class="mode-card">
+            <div class="mode-card__number">02</div>
+            <div class="mode-card__badge">Preview</div>
+            <h3>CROSS</h3>
+            <p>Use TETHER as a browser-side chat interface and relay work between independently selected provider tabs.</p>
+            <ul>
+              <li>Master / slave routes</li>
+              <li>Browser-to-browser relay</li>
+              <li>Provider mix-and-match</li>
+            </ul>
+            <span class="mode-card__note">Evolving with the extension</span>
+          </article>
+
+          <article class="mode-card mode-card--dark">
+            <div class="mode-card__number">03</div>
+            <div class="mode-card__badge">Next</div>
+            <h3>XPOSE</h3>
+            <p>Expose the selected tab as an OpenAI-compatible localhost endpoint for any harness that supports a custom provider.</p>
+            <ul>
+              <li>Harness-agnostic URL</li>
+              <li>Local machine only</li>
+              <li>No cloud prompt relay</li>
+            </ul>
+            <span class="mode-card__note">Planned local gateway</span>
+          </article>
+        </div>
+      </section>
+
+      <section class="section install-section" id="install" aria-labelledby="install-title">
+        <div class="install-intro">
+          <p class="eyebrow">Get the working route</p>
+          <h2 id="install-title">Two pieces.<br>One command.</h2>
+          <p>The CLI carries the local bridge. The Chrome extension owns the browser tab. Both come from the same repository.</p>
+          <a class="text-link" href="https://github.com/RaphaelBlaster/TETHER#quick-start">Read the complete setup guide <span aria-hidden="true">↗</span></a>
+        </div>
+
+        <ol class="install-steps">
+          <li>
+            <span class="step-number">01</span>
+            <div>
+              <p class="step-label">Install CLI + bundled extension</p>
+              <div class="command">
+                <code>npm install --global git+https://github.com/RaphaelBlaster/TETHER.git</code>
+                <button type="button" data-copy="npm install --global git+https://github.com/RaphaelBlaster/TETHER.git">Copy</button>
+              </div>
+            </div>
+          </li>
+          <li>
+            <span class="step-number">02</span>
+            <div>
+              <p class="step-label">Find the unpacked extension</p>
+              <div class="command">
+                <code>tether extension-path</code>
+                <button type="button" data-copy="tether extension-path">Copy</button>
+              </div>
+              <p class="step-help">Open <code>chrome://extensions</code>, enable Developer mode, then load the printed <code>dist</code> directory.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-number">03</span>
+            <div>
+              <p class="step-label">Launch from your working project</p>
+              <div class="command">
+                <code>tether</code>
+                <button type="button" data-copy="tether">Copy</button>
+              </div>
+              <p class="step-help">Open the extension beside an authenticated provider tab and activate it as the CLI endpoint.</p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <section class="section architecture-section" id="architecture" aria-labelledby="architecture-title">
+        <div class="section-heading section-heading--light">
+          <p class="eyebrow">Local data plane · remote control plane</p>
+          <h2 id="architecture-title">Remote knowledge.<br>Local conversations.</h2>
+          <p>The registry can repair declarative page selectors. It never becomes a relay for your prompts or browser responses.</p>
+        </div>
+
+        <div class="architecture-map">
+          <div class="architecture-lane architecture-lane--local">
+            <div class="lane-heading"><span>LOCAL MACHINE</span><strong>Private data plane</strong></div>
+            <div class="lane-flow">
+              <div><b>Harness</b><small>Codex / OpenCode</small></div>
+              <i aria-hidden="true">→</i>
+              <div><b>TETHER</b><small>Loopback adapter</small></div>
+              <i aria-hidden="true">→</i>
+              <div><b>Extension</b><small>Selected tab only</small></div>
+              <i aria-hidden="true">→</i>
+              <div><b>Chat</b><small>Provider session</small></div>
+            </div>
+          </div>
+          <div class="architecture-lane architecture-lane--cloud">
+            <div class="lane-heading"><span>REGISTRY SERVICE</span><strong>Selector control plane</strong></div>
+            <div class="lane-flow">
+              <div><b>GitHub</b><small>Auditable manifests</small></div>
+              <i aria-hidden="true">→</i>
+              <div><b>Render</b><small>Validated API</small></div>
+              <i aria-hidden="true">↔</i>
+              <div><b>Redis</b><small>Cache + rate limits</small></div>
+              <i aria-hidden="true">↔</i>
+              <div><b>MongoDB</b><small>Drift + job history</small></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="principles">
+          <article>
+            <span>01</span>
+            <h3>No remote code</h3>
+            <p>Updates contain selectors and structural fingerprints only. Automation behavior stays packaged in the extension.</p>
+          </article>
+          <article>
+            <span>02</span>
+            <h3>Last-known-good</h3>
+            <p>Invalid updates are rejected. The extension keeps its previous valid manifest and a packaged fallback.</p>
+          </article>
+          <article>
+            <span>03</span>
+            <h3>Traceable rollback</h3>
+            <p>Every provider change is tied to Git history, reviewable diffs, validation, and a reversible registry version.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="closing">
+        <img src="/tether-logo.svg" width="64" height="64" alt="">
+        <p class="eyebrow">Open source · work in progress</p>
+        <h2>Your browser already has the context.<br><em>Keep it there.</em></h2>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#install">Start with TETHER <span aria-hidden="true">→</span></a>
+          <a class="button button-secondary" href="https://github.com/RaphaelBlaster/TETHER">Follow development</a>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="brand">
+        <img src="/tether-logo.svg" width="32" height="32" alt="">
+        <span>TETHER</span>
+      </div>
+      <p>One continuous line through the open web.</p>
+      <div>
+        <a href="/healthz">API status</a>
+        <a href="/v1/adapters/index.json">Registry JSON</a>
+        <a href="https://github.com/RaphaelBlaster/TETHER">GitHub</a>
+      </div>
+      <small>© <span id="year">2026</span> TETHER</small>
+    </footer>
+  </body>
+</html>

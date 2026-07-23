@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 
 import { createDriftReport } from '../../extension/src/provider-adapter-registry.js'
@@ -13,6 +14,40 @@ const DRIFT_ERROR_CODES = new Set([
   'completion_signal_missing',
   'manifest_page_invalid',
 ])
+const STATIC_SITE = new Map([
+  ['/', {
+    body: readFileSync(new URL('../public/index.html', import.meta.url)),
+    contentType: 'text/html; charset=utf-8',
+    cacheControl: 'no-cache',
+  }],
+  ['/site.css', {
+    body: readFileSync(new URL('../public/site.css', import.meta.url)),
+    contentType: 'text/css; charset=utf-8',
+    cacheControl: 'public, max-age=3600',
+  }],
+  ['/site.js', {
+    body: readFileSync(new URL('../public/site.js', import.meta.url)),
+    contentType: 'text/javascript; charset=utf-8',
+    cacheControl: 'public, max-age=3600',
+  }],
+  ['/tether-logo.svg', {
+    body: readFileSync(new URL('../public/tether-logo.svg', import.meta.url)),
+    contentType: 'image/svg+xml',
+    cacheControl: 'public, max-age=86400',
+  }],
+])
+const SITE_CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "base-uri 'none'",
+  "connect-src 'self'",
+  "font-src 'self'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+  "img-src 'self'",
+  "object-src 'none'",
+  "script-src 'self'",
+  "style-src 'self'",
+].join('; ')
 
 export function createRegistryServer({
   config,
@@ -27,6 +62,12 @@ export function createRegistryServer({
 
     try {
       const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`)
+      const staticAsset = STATIC_SITE.get(url.pathname)
+      if ((request.method === 'GET' || request.method === 'HEAD') && staticAsset) {
+        sendStaticAsset(request, response, staticAsset)
+        return
+      }
+
       if (request.method === 'OPTIONS') {
         response.writeHead(204, corsHeaders())
         response.end()
@@ -216,6 +257,16 @@ function sendJson(response, status, value) {
     ...corsHeaders(),
   })
   response.end(body)
+}
+
+function sendStaticAsset(request, response, asset) {
+  response.setHeader('content-security-policy', SITE_CONTENT_SECURITY_POLICY)
+  response.writeHead(200, {
+    'cache-control': asset.cacheControl,
+    'content-type': asset.contentType,
+    'content-length': asset.body.length,
+  })
+  response.end(request.method === 'HEAD' ? undefined : asset.body)
 }
 
 function setSecurityHeaders(response, requestId) {

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title description">
+  <title id="title">TETHER logo</title>
+  <desc id="description">An abstract letter T formed by two connected endpoints and a descending stem.</desc>
+  <rect width="128" height="128" rx="28" fill="#171714"/>
+  <path d="M30 51.5 90 44.5" fill="none" stroke="#F3EFE4" stroke-width="8" stroke-linecap="round"/>
+  <path d="M60 48v41" fill="none" stroke="#F3EFE4" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="27" cy="52" r="13" fill="#171714" stroke="#F3EFE4" stroke-width="8"/>
+  <circle cx="94" cy="44" r="18" fill="#F05A2A"/>
+</svg>

@@ -35,6 +35,17 @@ test('registry serves conditional manifests and accepts bounded drift reports', 
   })
   const base = `http://${address.host}:${address.port}`
 
+  const landingPage = await fetch(base)
+  assert.equal(landingPage.status, 200)
+  assert.match(landingPage.headers.get('content-type'), /^text\/html/)
+  assert.match(await landingPage.text(), /Keep the thread/)
+  assert.match(landingPage.headers.get('content-security-policy'), /script-src 'self'/)
+
+  const stylesheet = await fetch(`${base}/site.css`)
+  assert.equal(stylesheet.status, 200)
+  assert.match(stylesheet.headers.get('content-type'), /^text\/css/)
+  assert.match(await stylesheet.text(), /--orange: #f05a2a/)
+
   const manifestResponse = await fetch(
     `${base}/v1/adapters?origin=${encodeURIComponent('https://tinker.thinkingmachines.ai')}`,
   )
