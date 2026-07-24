@@ -38,13 +38,22 @@ test('registry serves conditional manifests and accepts bounded drift reports', 
   const landingPage = await fetch(base)
   assert.equal(landingPage.status, 200)
   assert.match(landingPage.headers.get('content-type'), /^text\/html/)
-  assert.match(await landingPage.text(), /Keep the thread/)
+  const landingPageHtml = await landingPage.text()
+  assert.match(landingPageHtml, /Keep the thread/)
+  assert.match(landingPageHtml, /\/site\.css\?v=20260724-1/)
+  assert.match(landingPageHtml, /\/site\.js\?v=20260724-1/)
   assert.match(landingPage.headers.get('content-security-policy'), /script-src 'self'/)
 
-  const stylesheet = await fetch(`${base}/site.css`)
+  const stylesheet = await fetch(`${base}/site.css?v=20260724-1`)
   assert.equal(stylesheet.status, 200)
   assert.match(stylesheet.headers.get('content-type'), /^text\/css/)
+  assert.equal(stylesheet.headers.get('cache-control'), 'no-cache')
   assert.match(await stylesheet.text(), /--orange: #f05a2a/)
+
+  const script = await fetch(`${base}/site.js?v=20260724-1`)
+  assert.equal(script.status, 200)
+  assert.match(script.headers.get('content-type'), /^text\/javascript/)
+  assert.equal(script.headers.get('cache-control'), 'no-cache')
 
   const manifestResponse = await fetch(
     `${base}/v1/adapters?origin=${encodeURIComponent('https://tinker.thinkingmachines.ai')}`,

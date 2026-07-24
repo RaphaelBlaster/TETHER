@@ -23,12 +23,12 @@ const STATIC_SITE = new Map([
   ['/site.css', {
     body: readFileSync(new URL('../public/site.css', import.meta.url)),
     contentType: 'text/css; charset=utf-8',
-    cacheControl: 'public, max-age=3600',
+    cacheControl: 'no-cache',
   }],
   ['/site.js', {
     body: readFileSync(new URL('../public/site.js', import.meta.url)),
     contentType: 'text/javascript; charset=utf-8',
-    cacheControl: 'public, max-age=3600',
+    cacheControl: 'no-cache',
   }],
   ['/tether-logo.svg', {
     body: readFileSync(new URL('../public/tether-logo.svg', import.meta.url)),
