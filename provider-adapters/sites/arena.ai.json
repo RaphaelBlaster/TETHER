@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "origin": "https://arena.ai",
+  "adapterVersion": 1,
+  "engineVersion": 1,
+  "composer": {
+    "selectors": [
+      "textarea[name=\"message\"]",
+      "textarea[placeholder=\"Ask a follow up...\"]"
+    ]
+  },
+  "send": {
+    "selectors": [
+      "button[aria-label=\"Send message\"]",
+      "form button[type=\"submit\"]"
+    ]
+  },
+  "response": {
+    "turnSelectors": [
+      "div:has(> div[role=\"button\"] + div div.prose.text-wrap.break-words.prose-sm)"
+    ],
+    "contentSelectors": [
+      ":scope > div[role=\"button\"] + div"
+    ],
+    "excludeSelectors": [
+      ".not-prose"
+    ]
+  },
+  "completion": {
+    "stopSelectors": [],
+    "progressSelectors": []
+  }
+}

@@ -1,8 +1,14 @@
 {
   "schemaVersion": 1,
-  "registryVersion": 1,
-  "generatedAt": "2026-07-23T11:23:31.768Z",
+  "registryVersion": 2,
+  "generatedAt": "2026-07-24T03:25:23.784Z",
   "providers": {
+    "arena.ai": {
+      "origin": "https://arena.ai",
+      "adapterVersion": 1,
+      "url": "./sites/arena.ai.json",
+      "sha256": "4a7e9854dd3b8ef9a372d84fa2dfe43599d85601408ea7f031e946054746d706"
+    },
     "chat.deepseek.com": {
       "origin": "https://chat.deepseek.com",
       "adapterVersion": 1,
