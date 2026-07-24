@@ -1,6 +1,11 @@
 import { chromium } from 'playwright-core'
 import { mkdir } from 'node:fs/promises'
-import { buildBrowserPrompt, buildDeferredToolSchemaPrompt, buildProtocolBootstrapPrompt } from './browser-prompt.js'
+import {
+  buildBrowserPrompt,
+  buildDeferredToolSchemaPrompt,
+  buildProtocolBootstrapPrompt,
+  buildProtocolHelpPrompt,
+} from './browser-prompt.js'
 import { parseBrowserEnvelope, parseBrowserResponse } from './browser-envelope.js'
 import { selectDeferredToolDefinitions } from './compact-request.js'
 
@@ -54,23 +59,53 @@ export function createPlaywrightBrowserController({ executablePath, userDataDir,
         const bootstrapRequestId = `tether-bootstrap-${crypto.randomUUID()}`
         const bootstrapText = await submitAndExtract(page, buildProtocolBootstrapPrompt(bootstrapRequestId))
         const acknowledgement = parseBrowserEnvelope(bootstrapText, bootstrapRequestId, [])
-        if (acknowledgement.content !== 'TETHER_BOOTSTRAP_OK') {
+        if (acknowledgement.content !== 'TETHER_INSTALL_OK') {
           throw coded('invalid_bootstrap_ack', 'Browser did not acknowledge the TETHER protocol bootstrap')
         }
         bootstrappedPages.add(page)
       }
-      const prompt = buildBrowserPrompt({ requestId, request: codexRequest, installBootstrap: false })
-      const text = await submitAndExtract(page, prompt)
+      let prompt = buildBrowserPrompt({ requestId, request: codexRequest, installBootstrap: false })
+      let currentRequestId = requestId
+      let text = await submitAndExtract(page, prompt)
       let envelope = parseBrowserResponse(text, requestId, codexRequest.tools ?? [])
-      if (envelope.type === 'tool_schema_request') {
-        const schemaRequestId = `${requestId}.schema`
-        const definitions = selectDeferredToolDefinitions(codexRequest.tools ?? [], envelope.tools)
-        const schemaPrompt = buildDeferredToolSchemaPrompt({
-          requestId: schemaRequestId, originalRequestId: requestId, definitions,
-        })
-        if (schemaPrompt.length > 60_000) throw coded('deferred_tool_schema_too_large', 'Selected tool schema exceeds the browser message limit')
-        const schemaText = await submitAndExtract(page, schemaPrompt)
-        envelope = parseBrowserEnvelope(schemaText, schemaRequestId, codexRequest.tools ?? [])
+      let toolSchemaDelivered = false
+      let protocolHelpDelivered = false
+      while (envelope.type === 'tool_schema_request' || envelope.type === 'protocol_help_request') {
+        if (envelope.type === 'tool_schema_request') {
+          if (toolSchemaDelivered) {
+            throw coded('repeated_tool_schema_request', 'Browser requested another schema after exact schema delivery')
+          }
+          toolSchemaDelivered = true
+          const schemaRequestId = `${requestId}.schema`
+          const definitions = selectDeferredToolDefinitions(codexRequest.tools ?? [], envelope.tools)
+          prompt = buildDeferredToolSchemaPrompt({
+            requestId: schemaRequestId,
+            originalRequestId: currentRequestId,
+            definitions,
+          })
+          if (prompt.length > 60_000) {
+            throw coded('deferred_tool_schema_too_large', 'Selected tool schema exceeds the browser message limit')
+          }
+          currentRequestId = schemaRequestId
+        } else {
+          if (protocolHelpDelivered) {
+            throw coded('repeated_protocol_help_request', 'Browser requested protocol help again after exact documentation delivery')
+          }
+          protocolHelpDelivered = true
+          const helpRequestId = `${requestId}.docs`
+          prompt = buildProtocolHelpPrompt({
+            requestId: helpRequestId,
+            originalRequestId: currentRequestId,
+            originalCommand: prompt,
+            topics: envelope.topics,
+          })
+          if (prompt.length > 60_000) {
+            throw coded('protocol_help_too_large', 'Selected protocol documentation exceeds the browser message limit')
+          }
+          currentRequestId = helpRequestId
+        }
+        text = await submitAndExtract(page, prompt)
+        envelope = parseBrowserEnvelope(text, currentRequestId, codexRequest.tools ?? [])
       }
       return envelope
     } finally {

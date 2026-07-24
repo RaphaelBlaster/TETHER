@@ -363,6 +363,113 @@ test('deferred compact tooling delivers one exact schema then continues with the
   assert.equal(sawToolResult, true)
 })
 
+test('compact protocol bootstraps once and defers one requested help topic', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'tether-deferred-protocol-help-'))
+  const adapter = createTetherAdapter({
+    routeResponsesToBrowser: true,
+    conversationStatePath: join(directory, 'conversations.json'),
+    logger: { error() {} },
+  })
+  const info = await adapter.start()
+  t.after(async () => { await adapter.stop(); await rm(directory, { recursive: true, force: true }) })
+  const extension = new WebSocket(info.extensionWebsocketUrl)
+  await opened(extension)
+  extension.send(JSON.stringify({
+    protocol: 'tether-extension', version: 1, type: 'hello', extensionInstanceId: 'extension-protocol-help',
+    sessions: [{
+      browserSessionId: 'browser-protocol-help',
+      tabId: 14,
+      origin: 'https://chat.example',
+      providerId: 'example',
+      conversationId: 'protocol-help-conversation',
+    }],
+  }))
+  await waitFor(() => adapter.listExtensionRegistrations().length === 1)
+
+  let bootstrapCount = 0
+  let commandCount = 0
+  let helpDelivered = false
+  extension.addEventListener('message', (event) => {
+    const message = JSON.parse(event.data)
+    if (message.type !== 'browser_request') return
+    const prompt = message.payload.prompt
+    let response
+    if (prompt.startsWith('You are the model endpoint for a coding agent connected through TETHER.')) {
+      bootstrapCount += 1
+      response = {
+        schemaVersion: 1,
+        type: 'assistant_text',
+        requestId: message.requestId,
+        content: 'TETHER_INSTALL_OK',
+      }
+    } else {
+      const payload = browserPayload(prompt)
+      if (payload.type === 'codex_turn') {
+        commandCount += 1
+        assert.equal(prompt, JSON.stringify(payload))
+        assert.doesNotMatch(prompt, /OUTPUT DECISION|protocol command|JSON-escape|COMMAND JSON START/)
+        response = helpDelivered
+          ? { schemaVersion: 1, type: 'assistant_text', requestId: message.requestId, content: 'follow-up complete' }
+          : {
+              schemaVersion: 1,
+              type: 'protocol_help_request',
+              requestId: message.requestId,
+              topics: ['windows-json'],
+            }
+      } else {
+        assert.equal(payload.type, 'tether_protocol_docs')
+        assert.equal(payload.sections.length, 1)
+        assert.equal(payload.sections[0].name, 'windows-json')
+        assert.match(payload.sections[0].content, /LiteralPath/)
+        assert.equal(browserPayload(payload.originalCommand).type, 'codex_turn')
+        helpDelivered = true
+        response = {
+          schemaVersion: 1,
+          type: 'assistant_text',
+          requestId: message.requestId,
+          content: 'protocol help applied',
+        }
+      }
+    }
+    extension.send(JSON.stringify({
+      protocol: 'tether-extension',
+      version: 1,
+      type: 'browser_completed',
+      requestId: message.requestId,
+      browserSessionId: message.browserSessionId,
+      payload: { text: JSON.stringify(response) },
+    }))
+  })
+
+  const codex = new WebSocket(info.websocketUrl)
+  await opened(codex)
+  codex.send(JSON.stringify(request({
+    model: 'tether-compact',
+    input: [{
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'Read C:\\Users\\Me\\test.txt' }],
+    }],
+  })))
+  const first = await collectThroughCompletion(codex)
+  assert.equal(first.find((event) => event.type === 'response.output_text.delta').delta, 'protocol help applied')
+
+  codex.send(JSON.stringify(request({
+    model: 'tether-compact',
+    previous_response_id: first.at(-1).response.id,
+    input: [{
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'Now summarize it' }],
+    }],
+  })))
+  const second = await collectThroughCompletion(codex)
+  assert.equal(second.find((event) => event.type === 'response.output_text.delta').delta, 'follow-up complete')
+  assert.equal(bootstrapCount, 1)
+  assert.equal(commandCount, 2)
+  assert.equal(helpDelivered, true)
+})
+
 test('compact tooling enforces schema delivery when a browser model calls a catalog name directly', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'tether-direct-tool-schema-'))
   const adapter = createTetherAdapter({

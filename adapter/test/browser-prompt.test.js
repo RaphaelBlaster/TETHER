@@ -7,13 +7,15 @@ test('protocol bootstrap is an explicit instructional turn with examples and cor
   assert.match(prompt, /Follow these protocol rules for every later message/)
   assert.match(prompt, /OUTPUT DECISION/)
   assert.match(prompt, /tool_schema_request/)
+  assert.match(prompt, /protocol_help_request/)
+  assert.match(prompt, /windows-json/)
   assert.match(prompt, /JSON-escape/)
   assert.doesNotMatch(prompt, /COPY_FROM_REQUEST|COPY_THE_REQUEST_ID/)
   assert.match(prompt, /"requestId":"bootstrap-1"/)
   assert.ok(prompt.length < 4_000)
 })
 
-test('compact turns repeat a concrete decision tree for weaker browser models', () => {
+test('compact turns contain only the command after the protocol bootstrap', () => {
   const requestId = 'request-compact-1'
   const prompt = buildBrowserPrompt({
     requestId,
@@ -29,11 +31,22 @@ test('compact turns repeat a concrete decision tree for weaker browser models', 
     },
     installBootstrap: false,
   })
-  assert.match(prompt, /OUTPUT DECISION/)
-  assert.match(prompt, /local file/i)
-  assert.match(prompt, /request the tool schema before.*tool_call/i)
-  assert.match(prompt, /backslash/i)
-  assert.match(prompt, new RegExp(requestId))
+  assert.deepEqual(JSON.parse(prompt), {
+    schemaVersion: 1,
+    type: 'codex_turn',
+    requestId,
+    toolCatalog: [{ type: 'function', name: 'shell_command' }],
+    turn: {
+      input: [{
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'Read C:\\Users\\Me\\file.pdf' }],
+      }],
+      toolChoice: 'auto',
+      parallelToolCalls: false,
+    },
+  })
+  assert.doesNotMatch(prompt, /OUTPUT DECISION|protocol command|JSON-escape|COMMAND JSON START/)
 })
 
 test('tether-smoke emits exactly six JSON lines with the correlated reply envelope', () => {

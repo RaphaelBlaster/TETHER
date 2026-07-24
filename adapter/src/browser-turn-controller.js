@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto'
 import { EXTENSION_PROTOCOL, EXTENSION_PROTOCOL_VERSION } from './extension-session-registry.js'
-import { BOOTSTRAP_VERSION, buildBrowserPromptSequence, buildDeferredToolSchemaPrompt } from './browser-prompt.js'
+import {
+  BOOTSTRAP_VERSION,
+  buildBrowserPromptSequence,
+  buildDeferredToolSchemaPrompt,
+  buildProtocolHelpPrompt,
+} from './browser-prompt.js'
 import { parseBrowserResponse } from './browser-envelope.js'
 import { compactInstallationState, compactProjectionState, selectDeferredToolDefinitions } from './compact-request.js'
 
@@ -83,7 +88,12 @@ export function createBrowserTurnController({
           // checkpoint delivery without weakening real turn/tool extraction.
           envelope = { schemaVersion: 1, type: 'assistant_text', requestId: frame.requestId, content: 'TETHER_INSTALL_OK' }
         } else
-        if (['invalid_tool_schema_request', 'invalid_browser_json', 'invalid_browser_envelope'].includes(error?.code) &&
+        if ([
+          'invalid_tool_schema_request',
+          'invalid_protocol_help_request',
+          'invalid_browser_json',
+          'invalid_browser_envelope',
+        ].includes(error?.code) &&
             frame.kind !== 'install' && operation.repairCount < 1) {
           operation.repairCount += 1
           const repairRequestId = `${operation.requestId}.repair.${operation.repairCount}`
@@ -91,14 +101,18 @@ export function createBrowserTurnController({
             requestId: repairRequestId,
             kind: 'repair',
             toolSchemaDelivered: frame.kind === 'schema' || frame.toolSchemaDelivered === true,
+            protocolHelpDelivered: frame.kind === 'protocol_help' || frame.protocolHelpDelivered === true,
             prompt: JSON.stringify({
               schemaVersion: 1,
               type: 'tether_protocol_repair',
               requestId: repairRequestId,
               error: error.code === 'invalid_tool_schema_request'
                 ? 'The previous tool schema request named a tool that Codex did not offer.'
-                : 'The previous response did not use the required TETHER JSON envelope.',
+                : error.code === 'invalid_protocol_help_request'
+                  ? 'The previous protocol help request named an unavailable topic.'
+                  : 'The previous response did not use the required TETHER JSON envelope.',
               offeredTools: error.details?.offeredTools ?? offeredToolReferences(operation.codexRequest.tools ?? []),
+              ...(error.details?.availableTopics ? { availableProtocolHelp: error.details.availableTopics } : {}),
               originalRequestId: frame.requestId,
               originalCommand: frame.prompt,
               ...(error.details?.rawText !== undefined ? { previousResponse: error.details.rawText } : {}),
@@ -142,8 +156,9 @@ export function createBrowserTurnController({
         return
       }
       const toolSchemaDelivered = frame.kind === 'schema' || frame.toolSchemaDelivered === true
+      const protocolHelpDelivered = frame.kind === 'protocol_help' || frame.protocolHelpDelivered === true
       if (envelope.type === 'tool_call' && operation.codexRequest.model === 'tether-compact' && !toolSchemaDelivered) {
-        queueToolSchemaFrame(operation, [{
+        queueToolSchemaFrame(operation, frame, [{
           ...(envelope.namespace ? { namespace: envelope.namespace } : {}),
           name: envelope.name,
         }])
@@ -151,7 +166,14 @@ export function createBrowserTurnController({
       }
       if (envelope.type === 'tool_schema_request') {
         if (toolSchemaDelivered) throw coded('repeated_tool_schema_request', 'Browser requested another schema after exact schema delivery')
-        queueToolSchemaFrame(operation, envelope.tools)
+        queueToolSchemaFrame(operation, frame, envelope.tools)
+        return
+      }
+      if (envelope.type === 'protocol_help_request') {
+        if (protocolHelpDelivered) {
+          throw coded('repeated_protocol_help_request', 'Browser requested protocol help again after exact documentation delivery')
+        }
+        queueProtocolHelpFrame(operation, frame, envelope.topics)
         return
       }
       const previousConversation = await stateStore.get(operation.conversationKey)
@@ -214,7 +236,7 @@ export function createBrowserTurnController({
     })
   }
 
-  function queueToolSchemaFrame(operation, requestedTools) {
+  function queueToolSchemaFrame(operation, sourceFrame, requestedTools) {
     const definitions = selectDeferredToolDefinitions(operation.codexRequest.tools ?? [], requestedTools)
     const schemaRequestId = `${operation.requestId}.schema.0`
     const prompt = buildDeferredToolSchemaPrompt({
@@ -223,7 +245,35 @@ export function createBrowserTurnController({
       definitions,
     })
     if (prompt.length > 60000) throw coded('deferred_tool_schema_too_large', 'Selected tool schema exceeds the browser message limit')
-    operation.frames.push({ requestId: schemaRequestId, kind: 'schema', prompt })
+    operation.frames.push({
+      requestId: schemaRequestId,
+      kind: 'schema',
+      protocolHelpDelivered:
+        sourceFrame.kind === 'protocol_help' || sourceFrame.protocolHelpDelivered === true,
+      prompt,
+    })
+    operation.frameIndex += 1
+    dispatchFrame(operation)
+  }
+
+  function queueProtocolHelpFrame(operation, sourceFrame, topics) {
+    const helpRequestId = `${operation.requestId}.docs.0`
+    const prompt = buildProtocolHelpPrompt({
+      requestId: helpRequestId,
+      originalRequestId: sourceFrame.requestId,
+      originalCommand: sourceFrame.prompt,
+      topics,
+    })
+    if (prompt.length > 60_000) {
+      throw coded('protocol_help_too_large', 'Selected protocol documentation exceeds the browser message limit')
+    }
+    operation.frames.push({
+      requestId: helpRequestId,
+      kind: 'protocol_help',
+      toolSchemaDelivered: sourceFrame.kind === 'schema' || sourceFrame.toolSchemaDelivered === true,
+      protocolHelpDelivered: true,
+      prompt,
+    })
     operation.frameIndex += 1
     dispatchFrame(operation)
   }

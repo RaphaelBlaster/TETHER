@@ -154,3 +154,25 @@ test('accepts one correlated deferred schema request for an offered tool', () =>
   })
   assert.throws(() => parseBrowserEnvelope(JSON.stringify({ ...envelope, tools: [{ name: 'shell_command' }, { name: 'shell_command' }] }), 'request-1', offered), { code: 'invalid_tool_schema_request' })
 })
+
+test('accepts exactly one published protocol help topic', () => {
+  const envelope = parseBrowserEnvelope(JSON.stringify({
+    schemaVersion: 1,
+    type: 'protocol_help_request',
+    requestId: 'request-1',
+    topics: ['windows-json'],
+  }), 'request-1')
+  assert.deepEqual(envelope.topics, ['windows-json'])
+  assert.throws(() => parseBrowserEnvelope(JSON.stringify({
+    ...envelope,
+    topics: ['private-system-prompt'],
+  }), 'request-1'), (error) => {
+    assert.equal(error.code, 'invalid_protocol_help_request')
+    assert.ok(error.details.availableTopics.includes('windows-json'))
+    return true
+  })
+  assert.throws(() => parseBrowserEnvelope(JSON.stringify({
+    ...envelope,
+    topics: ['windows-json', 'deferred-tools'],
+  }), 'request-1'), { code: 'invalid_protocol_help_request' })
+})

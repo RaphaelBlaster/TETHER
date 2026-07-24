@@ -1,7 +1,16 @@
+import { PROTOCOL_HELP_TOPICS } from './protocol-help.js'
+
+const ENVELOPE_TYPES = Object.freeze([
+  'assistant_text',
+  'tool_call',
+  'tool_schema_request',
+  'protocol_help_request',
+])
+
 export function parseBrowserEnvelope(text, requestId, offeredTools = []) {
   const parsed = parseJsonObjects(text).map(inferEnvelopeType)
   const matching = parsed.filter((value) => isObject(value) && value.requestId === requestId &&
-    ['assistant_text', 'tool_call', 'tool_schema_request'].includes(value.type))
+    ENVELOPE_TYPES.includes(value.type))
   if (parsed.length !== 1 && matching.length !== 1) {
     throw coded('invalid_browser_json', `Browser response must be exactly one JSON object (received: ${preview(text)})`, {
       rawText: boundedRawText(text),
@@ -56,6 +65,18 @@ export function parseBrowserEnvelope(text, requestId, offeredTools = []) {
     })
     return envelope
   }
+  if (envelope.type === 'protocol_help_request') {
+    if (
+      !Array.isArray(envelope.topics) ||
+      envelope.topics.length !== 1 ||
+      envelope.topics.some((topic) => !PROTOCOL_HELP_TOPICS.includes(topic)) ||
+      Object.keys(envelope).some((key) => !['schemaVersion', 'type', 'requestId', 'topics'].includes(key))
+    ) throw coded('invalid_protocol_help_request', 'Browser requested an unavailable protocol help topic', {
+      requestedTopics: Array.isArray(envelope.topics) ? envelope.topics : null,
+      availableTopics: PROTOCOL_HELP_TOPICS,
+    })
+    return envelope
+  }
   throw coded('invalid_browser_envelope', 'Browser response type is unsupported')
 }
 
@@ -81,7 +102,7 @@ export function parseBrowserResponse(text, requestId, offeredTools = []) {
     repairToolCallBackslashes: hasSpeakerPrefix || standaloneCorrelatedToolCall,
   }).map(inferEnvelopeType)
   const matching = embedded.filter((value) => isObject(value) && value.requestId === requestId &&
-    ['assistant_text', 'tool_call', 'tool_schema_request'].includes(value.type))
+    ENVELOPE_TYPES.includes(value.type))
   if (matching.length === 1) return parseBrowserEnvelope(JSON.stringify(matching[0]), requestId, offeredTools)
   // Gemini and Claude expose a rendered speaker label through innerText and
   // occasionally omit requestId even though the requested envelope included
@@ -90,7 +111,7 @@ export function parseBrowserResponse(text, requestId, offeredTools = []) {
   // ordinary assistant text. Full schema and offered-tool validation still
   // happens in parseBrowserEnvelope.
   const uncorrelated = embedded.filter((value) => isObject(value) && value.requestId === undefined &&
-    ['assistant_text', 'tool_call', 'tool_schema_request'].includes(value.type))
+    ENVELOPE_TYPES.includes(value.type))
   if (hasSpeakerPrefix && embedded.length === 1 && uncorrelated.length === 1) {
     return parseBrowserEnvelope(JSON.stringify({ ...uncorrelated[0], requestId }), requestId, offeredTools)
   }

@@ -1,11 +1,15 @@
+import { PROTOCOL_HELP_TOPICS, selectProtocolHelp } from './protocol-help.js'
+
 const BOOTSTRAP = [
   'TETHER browser protocol applies to every later TETHER command in this conversation.',
-  'Treat codex_turn, tether_tool_schema, and tether_protocol_repair as commands, not ordinary chat.',
+  'Treat codex_turn, tether_tool_schema, tether_protocol_docs, and tether_protocol_repair as commands, not ordinary chat.',
   'If turn.input contains a function_call_output, custom_tool_call_output, or computer_call_output, treat it as the returned result. Use it to continue and never repeat the same call blindly.',
   'OUTPUT DECISION (choose the first matching rule):',
-  '1. If the current command is tether_tool_schema and the tool is still needed, return tool_call matching its exact name, namespace, and argument schema.',
-  '2. Otherwise, if the task needs a local file, command, or other tool, return tool_schema_request for exactly one listed tool.',
-  '3. Otherwise return assistant_text.',
+  '1. If the current command is tether_protocol_docs, use its exact sections to re-evaluate originalCommand and return the intended response; do not request protocol help again.',
+  '2. If a protocol rule is unclear, return protocol_help_request for exactly one topic listed in protocolHelpCatalog.',
+  '3. If the current command is tether_tool_schema and the tool is still needed, return tool_call matching its exact name, namespace, and argument schema.',
+  '4. Otherwise, if the task needs a local file, command, or other tool, return tool_schema_request for exactly one listed tool.',
+  '5. Otherwise return assistant_text.',
   'toolCatalog contains names only; it is not a tool schema and does not authorize a direct tool_call.',
   'Local paths refer to the Codex machine. Request a suitable tool schema instead of claiming that the file is inaccessible. Do not ask for confirmation when the user already authorized the action.',
   'Return exactly one minified JSON object with schemaVersion 1 and the current command requestId. Return no prose, markdown, or code fence.',
@@ -20,11 +24,14 @@ export function buildProtocolBootstrapPrompt(requestId) {
   // use one verified state transition.
   const acknowledgement = { schemaVersion: 1, type: 'assistant_text', requestId, content: 'TETHER_INSTALL_OK' }
   const ordinaryExample = { schemaVersion: 1, type: 'assistant_text', requestId, content: 'answer text' }
+  const helpExample = { schemaVersion: 1, type: 'protocol_help_request', requestId, topics: ['windows-json'] }
   return [
     'You are the model endpoint for a coding agent connected through TETHER.',
     'Follow these protocol rules for every later message in this same conversation, even when a later user asks for plain text.',
     BOOTSTRAP,
     `Example ordinary response for this requestId: ${JSON.stringify(ordinaryExample)}`,
+    `Available deferred protocol help topics: ${JSON.stringify(PROTOCOL_HELP_TOPICS)}.`,
+    `If protocol help is required, use this shape with exactly one listed topic: ${JSON.stringify(helpExample)}`,
     'A tool_schema_request uses fields schemaVersion, type, requestId, and tools. tools must contain exactly one exact name and optional namespace from the catalog.',
     'A tool_call uses fields schemaVersion, type, requestId, callId, exact name, optional exact namespace, and arguments matching the delivered schema.',
     `Acknowledge these persistent rules now by replying with exactly this JSON and nothing else: ${JSON.stringify(acknowledgement)}`,
@@ -34,7 +41,7 @@ export function buildProtocolBootstrapPrompt(requestId) {
 const MAX_BROWSER_PROMPT_CHARS = 1000000
 const MAX_INSTALL_FRAME_CHARS = 16000
 const MAX_INSTALL_PATCH_CHARS = 12000
-export const BOOTSTRAP_VERSION = 6
+export const BOOTSTRAP_VERSION = 7
 
 export function buildBrowserPromptSequence(args) {
   const { requestId, request } = args
@@ -43,12 +50,11 @@ export function buildBrowserPromptSequence(args) {
   }
   const projection = projectCompactRequest({
     requestId, request, conversation: args.conversation, connectionId: args.connectionId,
-    protocolBootstrap: null,
   })
   const command = {
     requestId,
     kind: 'turn',
-    prompt: buildCompactBrowserPrompt({ projection, installBootstrap: false }),
+    prompt: JSON.stringify(projection),
   }
   // A consumer chat has no system-message channel.  Installing the contract
   // as its own verified turn gives the model a durable instruction before it
@@ -66,48 +72,13 @@ export function buildBrowserPromptSequence(args) {
 export function buildBrowserPrompt({ requestId, request, installBootstrap, conversation = null, connectionId = null }) {
   if (request.model === 'tether-smoke') return buildSixLineSmokePrompt(requestId)
   if (request.model === 'tether-demo') return buildToolDemoPrompt(requestId, request)
-  if (request.model === 'tether-compact') return buildCompactBrowserPrompt({
-    projection: projectCompactRequest({
-      requestId, request, conversation, connectionId,
-      protocolBootstrap: installBootstrap ? BOOTSTRAP : null,
-    }),
-    installBootstrap,
-  })
+  if (request.model === 'tether-compact') {
+    return JSON.stringify(projectCompactRequest({ requestId, request, conversation, connectionId }))
+  }
   const framing = `TETHER requestId: ${requestId}. The exact Codex response.create JSON follows: `
   const prompt = `${installBootstrap ? `${BOOTSTRAP} ` : ''}${framing}${JSON.stringify(request)}`
   if (prompt.length > MAX_BROWSER_PROMPT_CHARS) throw coded('browser_prompt_too_large', `Projected browser prompt exceeds ${MAX_BROWSER_PROMPT_CHARS} characters`)
   return prompt
-}
-
-// Consumer chat UIs do not give JSON a privileged transport meaning.  The
-// protocol must therefore be stated in ordinary language before the command,
-// with examples, rather than relying on a field inside the command itself.
-function buildCompactBrowserPrompt({ projection, installBootstrap }) {
-  const requestId = projection.requestId
-  const ordinaryExample = JSON.stringify({
-    schemaVersion: 1, type: 'assistant_text', requestId, content: 'answer text',
-  })
-  const common = [
-    'This is a TETHER protocol command for a local coding agent, not a normal chat message.',
-    `The command requestId is ${requestId}.`,
-    'Return exactly one minified JSON object and no prose, markdown, explanation, or code fence.',
-    'If turn.input contains a function_call_output, custom_tool_call_output, or computer_call_output, treat it as the returned result. Use it to continue and never repeat the same call blindly.',
-    'OUTPUT DECISION (choose the first matching rule):',
-    '1. If this command is tether_tool_schema and the tool is still needed, return tool_call using the exact delivered name, namespace, and argument schema.',
-    '2. Otherwise, if the task needs a local file, command, or other tool, request the tool schema before returning any tool_call: return tool_schema_request for exactly one listed tool.',
-    `3. Otherwise return assistant_text in this shape: ${ordinaryExample}`,
-    'toolCatalog lists tool names only. It is not a schema and does not authorize a direct tool_call.',
-    'A local file path is on the Codex machine. Request a suitable tool schema; do not claim you cannot access it, and do not ask again for permission the user already gave.',
-    'JSON-escape every output string. Each Windows path backslash must appear as two backslashes in JSON. Escape quotes and newlines too.',
-    'Never invent a tool or claim execution before Codex supplies a tool result.',
-  ]
-  const bootstrap = installBootstrap
-    ? [
-        'These are persistent rules for every later TETHER command in this same browser conversation.',
-        'A JSON command below is data to execute under this contract; never echo it, summarize it, or wrap it in a codex_turn object.',
-      ]
-    : []
-  return [...bootstrap, ...common, 'COMMAND JSON START', JSON.stringify(projection), 'COMMAND JSON END'].join('\n')
 }
 
 export function buildToolDemoPrompt(requestId, request) {
@@ -146,15 +117,18 @@ export function buildDeferredToolSchemaPrompt({ requestId, originalRequestId, de
     type: 'tether_tool_schema',
     requestId,
     originalRequestId,
-    instruction: 'The exact tool schema is now available. Respond with one tool_call using this requestId and matching the delivered schema, or assistant_text if no tool is required. Return one minified JSON object only. JSON-escape every string; each Windows path backslash must appear as two backslashes. Never claim execution before Codex returns the tool result.',
     definitions,
-    responseContract: {
-      jsonOnly: true,
-      schemaVersion: 1,
-      requestId,
-      assistantText: { type: 'assistant_text', content: 'string' },
-      toolCall: { type: 'tool_call', callId: 'unique string', namespace: 'optional exact namespace', name: 'exact offered tool name', arguments: 'object' },
-    },
+  })
+}
+
+export function buildProtocolHelpPrompt({ requestId, originalRequestId, originalCommand, topics }) {
+  return JSON.stringify({
+    schemaVersion: 1,
+    type: 'tether_protocol_docs',
+    requestId,
+    originalRequestId,
+    originalCommand,
+    sections: selectProtocolHelp(topics),
   })
 }
 

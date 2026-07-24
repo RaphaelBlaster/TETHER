@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 
 export const COMPACT_SCHEMA_VERSION = 1
 
-export function projectCompactRequest({ requestId, request, conversation = null, connectionId = null, protocolBootstrap = null }) {
+export function projectCompactRequest({ requestId, request, conversation = null, connectionId = null }) {
   const assets = compactAssets(request)
   const { context, delta } = splitInput(request.input ?? [], request.previous_response_id == null, conversation, connectionId)
   const contextHash = digest(context)
@@ -17,15 +17,6 @@ export function projectCompactRequest({ requestId, request, conversation = null,
     schemaVersion: COMPACT_SCHEMA_VERSION,
     type: 'codex_turn',
     requestId,
-    responseContract: {
-      jsonOnly: true,
-      schemaVersion: 1,
-      requestId,
-      assistantText: { type: 'assistant_text', content: 'string' },
-      toolCall: { type: 'tool_call', callId: 'unique string', namespace: 'optional exact namespace', name: 'exact offered tool name', arguments: 'object' },
-      toolSchemaRequest: { type: 'tool_schema_request', tools: 'one-element array containing an exact offered {name, optional namespace}' },
-    },
-    ...(protocolBootstrap ? { protocolBootstrap } : {}),
     ...(toolCatalog ? { toolCatalog } : {}),
     turn: {
       input: delta,

@@ -103,10 +103,9 @@ test('large exact tool definitions remain deferred behind one names-only turn', 
   assert.equal(frames.length, 2)
   assert.equal(frames[0].kind, 'install')
   assert.ok(frames.every((frame) => frame.prompt.length < 17000))
-  const command = frames[1].prompt.match(/COMMAND JSON START\n([\s\S]+)\nCOMMAND JSON END$/)[1]
-  const projected = JSON.parse(command)
+  const projected = JSON.parse(frames[1].prompt)
   assert.deepEqual(projected.toolCatalog, compactToolCatalog(tools))
-  assert.equal(projected.protocolBootstrap, undefined)
+  assert.equal(projected.responseContract, undefined)
   assert.deepEqual(selectDeferredToolDefinitions(tools, tools.map(({ name }) => ({ name }))), tools)
   assert.equal(frames.at(-1).requestId, 'req-large')
 })
@@ -137,7 +136,7 @@ test('huge Codex runtime payload projects to a browser prompt below the composer
       parameters: { type: 'object', properties: { value: { type: 'string', description: 'schema '.repeat(1000) } } },
     })),
   })
-  const projected = projectCompactRequest({ requestId: 'bounded', request: original, protocolBootstrap: 'bootstrap' })
+  const projected = projectCompactRequest({ requestId: 'bounded', request: original })
   const serialized = JSON.stringify(projected)
   assert.ok(serialized.length < 16_000, `projected prompt was ${serialized.length} characters`)
   assert.match(serialized, /hello from user/)
