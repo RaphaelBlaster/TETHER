@@ -72,6 +72,16 @@ test('repairs raw Windows backslashes in one standalone correlated tool call', (
   )
 })
 
+test('normalizes Gemini speaker output with unescaped quotes around a Windows shell path', () => {
+  const response = String.raw`Gemini said {"schemaVersion":1,"type":"tool_call","requestId":"current","callId":"call-read-test","name":"shell_command","arguments":{"command":"Get-Content -LiteralPath "C:\Users\Megh Mayur\OneDrive\Desktop\test.txt""}}`
+  const envelope = parseBrowserResponse(response, 'current', ['shell_command'])
+  assert.equal(envelope.type, 'tool_call')
+  assert.equal(
+    envelope.arguments.command,
+    String.raw`Get-Content -LiteralPath "C:\Users\Megh Mayur\OneDrive\Desktop\test.txt"`,
+  )
+})
+
 test('does not repair a standalone raw tool call for another request', () => {
   const response = String.raw`{"schemaVersion":1,"type":"tool_call","requestId":"wrong","callId":"tether-call-3","name":"shell_command","arguments":{"command":"Get-Content 'C:\Users\Other\test.txt'"}}`
   assert.throws(

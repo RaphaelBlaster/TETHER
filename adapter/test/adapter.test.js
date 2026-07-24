@@ -470,7 +470,7 @@ test('compact protocol bootstraps once and defers one requested help topic', asy
   assert.equal(helpDelivered, true)
 })
 
-test('compact tooling enforces schema delivery when a browser model calls a catalog name directly', async (t) => {
+test('compact tooling normalizes a Gemini speaker label and enforces schema delivery for a direct call', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'tether-direct-tool-schema-'))
   const adapter = createTetherAdapter({
     routeResponsesToBrowser: true,
@@ -501,10 +501,7 @@ test('compact tooling enforces schema delivery when a browser model calls a cata
     } else {
       const payload = browserPayload(message.payload.prompt)
       if (payload.type === 'codex_turn') {
-        response = {
-          schemaVersion: 1, type: 'tool_call', requestId: message.requestId,
-          callId: 'call-before-schema', name: 'shell_command', arguments: { command: 'Get-Date' },
-        }
+        response = String.raw`Gemini said {"schemaVersion":1,"type":"tool_call","requestId":"${message.requestId}","callId":"call-before-schema","name":"shell_command","arguments":{"command":"Get-Content -LiteralPath "C:\Users\Megh Mayur\OneDrive\Desktop\test.txt""}}`
       } else {
         assert.equal(payload.type, 'tether_tool_schema')
         assert.deepEqual(payload.definitions, [exactTool])
@@ -517,7 +514,8 @@ test('compact tooling enforces schema delivery when a browser model calls a cata
     }
     extension.send(JSON.stringify({
       protocol: 'tether-extension', version: 1, type: 'browser_completed', requestId: message.requestId,
-      browserSessionId: message.browserSessionId, payload: { text: JSON.stringify(response) },
+      browserSessionId: message.browserSessionId,
+      payload: { text: typeof response === 'string' ? response : JSON.stringify(response) },
     }))
   })
 

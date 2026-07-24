@@ -88,17 +88,18 @@ export function parseBrowserResponse(text, requestId, offeredTools = []) {
   const normalized = String(text ?? '').trim()
   if (!normalized) throw coded('invalid_browser_json', 'Browser response was empty')
   const hasSpeakerPrefix = /^[^{}\r\n]{1,80}\b(?:said|says)\s+(?=\{)/i.test(normalized)
+  const protocolText = hasSpeakerPrefix ? normalized.slice(normalized.indexOf('{')) : normalized
   const standaloneCorrelatedToolCall =
-    normalized.startsWith('{') &&
-    normalized.endsWith('}') &&
-    /"type"\s*:\s*"tool_call"/.test(normalized) &&
-    new RegExp(`"requestId"\\s*:\\s*${escapeRegExp(JSON.stringify(requestId))}`).test(normalized)
+    protocolText.startsWith('{') &&
+    protocolText.endsWith('}') &&
+    /"type"\s*:\s*"tool_call"/.test(protocolText) &&
+    new RegExp(`"requestId"\\s*:\\s*${escapeRegExp(JSON.stringify(requestId))}`).test(protocolText)
   // Some providers render a small speaker prefix (for example, "Gemini said")
   // before an otherwise valid protocol object.  Accept only a uniquely
   // correlated object; never parse an arbitrary JSON fragment as a tool call.
   // A standalone tool call with the exact current requestId is equally
   // unambiguous, so repair raw Windows path separators there as well.
-  const embedded = parseJsonObjects(normalized, {
+  const embedded = parseJsonObjects(protocolText, {
     repairToolCallBackslashes: hasSpeakerPrefix || standaloneCorrelatedToolCall,
   }).map(inferEnvelopeType)
   const matching = embedded.filter((value) => isObject(value) && value.requestId === requestId &&
@@ -115,8 +116,8 @@ export function parseBrowserResponse(text, requestId, offeredTools = []) {
   if (hasSpeakerPrefix && embedded.length === 1 && uncorrelated.length === 1) {
     return parseBrowserEnvelope(JSON.stringify({ ...uncorrelated[0], requestId }), requestId, offeredTools)
   }
-  if (normalized.startsWith('{') || normalized.startsWith('[')) {
-    return parseBrowserEnvelope(normalized, requestId, offeredTools)
+  if (protocolText.startsWith('{') || protocolText.startsWith('[')) {
+    return parseBrowserEnvelope(protocolText, requestId, offeredTools)
   }
   return { schemaVersion: 1, type: 'assistant_text', requestId, content: normalized }
 }
@@ -158,6 +159,14 @@ function parseJsonObjects(value, { repairToolCallBackslashes = false } = {}) {
           values.push(JSON.parse(candidate))
         } catch {
           if (repairToolCallBackslashes && /"type"\s*:\s*"tool_call"/.test(candidate)) {
+            const repairedCommand = repairQuotedShellCommand(candidate)
+            if (repairedCommand) {
+              try {
+                values.push(JSON.parse(repairedCommand))
+                start = end
+                break
+              } catch {}
+            }
             try { values.push(JSON.parse(escapeRawBackslashesInJsonStrings(candidate))) } catch {}
           }
         }
@@ -167,6 +176,25 @@ function parseJsonObjects(value, { repairToolCallBackslashes = false } = {}) {
     }
   }
   return values
+}
+
+// Some consumer UIs prefix the model name and expose a shell command whose
+// quoted Windows path was not JSON-escaped. Repair only the command value of a
+// shell_command tool call; JSON.stringify preserves the exact command while
+// escaping its quotes and path separators. Offered-tool validation still runs
+// before the envelope can be accepted or executed.
+function repairQuotedShellCommand(value) {
+  if (!/"name"\s*:\s*"shell_command"/.test(value)) return null
+  const commandStart = /"arguments"\s*:\s*\{\s*"command"\s*:\s*"/.exec(value)
+  if (!commandStart) return null
+  const openingQuote = commandStart.index + commandStart[0].length - 1
+  const remainder = value.slice(openingQuote + 1)
+  const commandEnd = /"\s*}\s*}\s*$/.exec(remainder)
+  if (!commandEnd) return null
+  const closingQuote = openingQuote + 1 + commandEnd.index
+  const command = value.slice(openingQuote + 1, closingQuote)
+  if (!command.includes('"')) return null
+  return `${value.slice(0, openingQuote)}${JSON.stringify(command)}${value.slice(closingQuote + 1)}`
 }
 
 // Consumer model UIs sometimes render a Windows command with single path
