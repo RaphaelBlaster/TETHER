@@ -38,22 +38,8 @@ test('registry serves conditional manifests and accepts bounded drift reports', 
   const landingPage = await fetch(base)
   assert.equal(landingPage.status, 200)
   assert.match(landingPage.headers.get('content-type'), /^text\/html/)
-  const landingBody = await landingPage.text()
-  assert.match(landingBody, /Your browser chat/)
-  assert.doesNotMatch(landingBody, /sha256/i)
-  assert.doesNotMatch(landingBody, /Inspect JSON/)
+  assert.match(await landingPage.text(), /Keep the thread/)
   assert.match(landingPage.headers.get('content-security-policy'), /script-src 'self'/)
-
-  const installPage = await fetch(`${base}/install`)
-  assert.equal(installPage.status, 200)
-  assert.match(await installPage.text(), /tether extension-path/)
-
-  const architecturePage = await fetch(`${base}/architecture`)
-  assert.equal(architecturePage.status, 200)
-  const architectureBody = await architecturePage.text()
-  assert.match(architectureBody, /SHA-256 values/)
-  assert.match(architectureBody, /Short-lived JWT/)
-  assert.match(architectureBody, /not passwords, API keys, or signing secrets/)
 
   const stylesheet = await fetch(`${base}/site.css`)
   assert.equal(stylesheet.status, 200)

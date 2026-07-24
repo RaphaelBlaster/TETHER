@@ -14,26 +14,12 @@ const DRIFT_ERROR_CODES = new Set([
   'completion_signal_missing',
   'manifest_page_invalid',
 ])
-const INSTALL_PAGE = {
-  body: readFileSync(new URL('../public/install.html', import.meta.url)),
-  contentType: 'text/html; charset=utf-8',
-  cacheControl: 'no-cache',
-}
-const ARCHITECTURE_PAGE = {
-  body: readFileSync(new URL('../public/architecture.html', import.meta.url)),
-  contentType: 'text/html; charset=utf-8',
-  cacheControl: 'no-cache',
-}
 const STATIC_SITE = new Map([
   ['/', {
     body: readFileSync(new URL('../public/index.html', import.meta.url)),
     contentType: 'text/html; charset=utf-8',
     cacheControl: 'no-cache',
   }],
-  ['/install', INSTALL_PAGE],
-  ['/install/', INSTALL_PAGE],
-  ['/architecture', ARCHITECTURE_PAGE],
-  ['/architecture/', ARCHITECTURE_PAGE],
   ['/site.css', {
     body: readFileSync(new URL('../public/site.css', import.meta.url)),
     contentType: 'text/css; charset=utf-8',
