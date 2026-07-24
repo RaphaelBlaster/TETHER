@@ -29,6 +29,7 @@ import {
   createProviderAdapterEndpointResolver,
   createProviderAdapterRegistry,
 } from './provider-adapter-registry.js'
+import { createSelectorRequestClient } from './selector-request-client.js'
 
 const PROVIDER_ADAPTER_REGISTRY_URL = 'https://tether-provider-registry.onrender.com'
 const TRANSPORT_MODE_KEY = 'tetherTransportMode'
@@ -148,6 +149,11 @@ const providerAdapters = createProviderAdapterRegistry({
   packagedManifests: createPackagedProviderManifests(PROVIDERS),
   storage: chrome.storage.local,
   fetchManifest: fetchProviderAdapter,
+})
+const selectorRequests = createSelectorRequestClient({
+  baseUrl: PROVIDER_ADAPTER_REGISTRY_URL,
+  storage: chrome.storage.local,
+  extensionVersion: chrome.runtime.getManifest().version,
 })
 // The adapter path deliberately uses the same self-contained direct-CDP
 // pipeline that proved reliable in the replacement extension. It does not
@@ -308,6 +314,21 @@ async function panelState(sender) {
     title: tab?.title ?? inspectedSite.label ?? null,
     faviconUrl: tab?.favIconUrl ?? null,
   }
+  let selectorRequest = null
+  if (site.kind === 'web' && site.selectorRequestEligible) {
+    let adapter = await providerAdapters.resolve(site.origin)
+    selectorRequest = await selectorRequests.status(site.origin)
+    if (selectorRequest.status === 'available' &&
+        (!adapter || (selectorRequest.adapterVersion ?? 0) > adapter.adapterVersion)) {
+      adapter = await providerAdapters.resolve(site.origin, { refresh: true })
+    }
+    if (adapter) {
+      site.hasAdapter = true
+      site.providerKind = 'llm'
+      site.adapterVersion = adapter.adapterVersion
+      site.adapterSource = adapter.source
+    }
+  }
   const session = browserSessions.getByTabId(tab?.id)
   const crossSessions = browserSessions.list().filter((candidate) => candidate.transportMode === 'CROSS')
   const endpoints = {
@@ -321,7 +342,7 @@ async function panelState(sender) {
     transportMode: session?.transportMode ?? null,
   }
   if (site.kind === 'restricted') {
-    return { site, tabId: tab?.id ?? null, access: 'restricted', calibration: null, activation, endpoints }
+    return { site, tabId: tab?.id ?? null, access: 'restricted', calibration: null, selectorRequest, activation, endpoints }
   }
 
   const profiles = await loadCalibrationProfiles()
@@ -337,6 +358,7 @@ async function panelState(sender) {
         ...calibrationProjection(profileInspection, null, profile, site.origin),
         state: 'access_required',
       },
+      selectorRequest,
       activation,
       endpoints,
     }
@@ -355,6 +377,7 @@ async function panelState(sender) {
     tabId: tab.id,
     access: 'granted',
     calibration: calibrationStatus,
+    selectorRequest,
     calibrationOperation,
     injectionOperation: session ? injection.getBySessionId(session.browserSessionId) : null,
     responseCalibration: {
@@ -447,6 +470,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ state: manager.getState() })
     return undefined
   }
+
+  if (message?.type === 'selectorRequest.submit') {
+    lifecycleReady.then(async () => {
+      const tab = await tabForPanelSender(sender)
+      const site = inspectSite(tab?.url)
+      if (site.kind !== 'web' || !site.selectorRequestEligible) {
+        throw Object.assign(new Error('Selector requests are limited to AI and LLM websites'), {
+          code: 'selector_request_ineligible',
+        })
+      }
+      const adapter = await providerAdapters.resolve(site.origin)
+      const reason = adapter ? 'adapter_invalid' : 'missing_adapter'
+      const result = await selectorRequests.request(
+        site.origin,
+        reason,
+        adapter?.adapterVersion ?? 0,
+      )
+      broadcast({ type: 'selectorRequest.stateChanged', origin: site.origin, status: result.status })
+      broadcast({ type: 'panel.stateChanged' })
+      return result
+    }).then(
+      (result) => sendResponse({ ok: true, selectorRequest: result }),
+      (error) => sendFailure(sendResponse, error),
+    )
+    return true
+  }
   if (message?.type === 'panel.getState') {
     panelState(sender).then(
       (state) => sendResponse({ ok: true, state }),
@@ -487,6 +536,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           {
             transportMode,
             role: transportMode === 'CROSS' ? requestedRole : 'ENDPOINT',
+            hasAdapter: current.site?.hasAdapter === true,
           },
         )
         await tabPanels.sessionActivated(session)

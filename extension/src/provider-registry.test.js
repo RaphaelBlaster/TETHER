@@ -17,6 +17,7 @@ test('unknown HTTPS origins are configurable without adapters', () => {
   assert.equal(site.label, 'support.example.com')
   assert.equal(site.hasAdapter, false)
   assert.equal(site.conversationId, null)
+  assert.equal(site.selectorRequestEligible, false)
 })
 
 test('known LLM origins expose built-in adapters without deciding the CROSS role', () => {
@@ -24,7 +25,15 @@ test('known LLM origins expose built-in adapters without deciding the CROSS role
     const site = inspectSite(url)
     assert.equal(site.hasAdapter, true)
     assert.equal(site.providerKind, 'llm')
+    assert.equal(site.selectorRequestEligible, true)
   }
+})
+
+test('selector requests are offered to likely AI sites using only their canonical origin', () => {
+  const site = inspectSite('https://tinker.thinkingmachines.ai/playground/users/me/chats/private?token=nope')
+  assert.equal(site.origin, 'https://tinker.thinkingmachines.ai')
+  assert.equal(site.selectorRequestEligible, true)
+  assert.equal(site.conversationId, null)
 })
 
 test('optional ChatGPT adapter enriches label and conversation identity only', () => {

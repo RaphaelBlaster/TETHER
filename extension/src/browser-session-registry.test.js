@@ -118,6 +118,20 @@ test('unknown calibrated origin activates without a provider adapter', async () 
   assert.equal(session.conversationId, null)
 })
 
+test('a remote registry adapter activates an AI site without local calibration', async () => {
+  const { registry } = harness({ uuids: ['browser-remote'] })
+  await registry.initialize()
+  const session = await registry.activate(
+    tab(8, 'https://new-model.ai/chat/private-thread?account=42'),
+    {},
+    null,
+    { hasAdapter: true },
+  )
+  assert.equal(session.providerId, 'site:https://new-model.ai')
+  assert.equal(session.origin, 'https://new-model.ai')
+  assert.equal(session.conversationId, null)
+})
+
 test('CROSS records one MASTER and one SLAVE and rejects a duplicate role', async () => {
   const supportProfile = { version: 1, origin: 'https://support.example.com' }
   const { registry } = harness({ uuids: ['browser-master', 'browser-slave', 'browser-extra'] })

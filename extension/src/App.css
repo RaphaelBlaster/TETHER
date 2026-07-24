@@ -315,6 +315,19 @@ input:focus-visible {
 .product-primary:active:not(:disabled) { transform: translate(3px, 3px); box-shadow: 2px 2px 0 var(--orange); }
 .product-primary:disabled { cursor: not-allowed; opacity: .55; box-shadow: 4px 4px 0 var(--line-strong); }
 .product-primary__state { display: flex; height: 41px; align-items: center; gap: 6px; padding: 0 11px; color: #171714; background: var(--orange); font-size: 9px; letter-spacing: .07em; text-transform: uppercase; }
+.setup-fallback {
+  width: 100%;
+  margin-top: 13px;
+  padding: 6px;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 10px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.setup-fallback:hover:not(:disabled) { color: var(--ink); }
+.setup-fallback:disabled { cursor: not-allowed; opacity: .5; }
 
 .endpoint-facts { display: grid; gap: 9px; margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--line); }
 .status-fact { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; font-size: 10px; }

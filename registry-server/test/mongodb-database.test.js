@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createMongoRegistryDatabase } from '../src/mongodb-database.js'
+import { selectorRequestId } from '../src/selector-requests.js'
 
 const REPORT = {
   origin: 'https://tinker.thinkingmachines.ai',
@@ -21,7 +22,7 @@ test('MongoDB adapter creates indexes, aggregates drift and deduplicates thresho
         return client
       }
     },
-    now: () => `2026-07-23T00:00:0${tick++}.000Z`,
+    now: () => new Date(Date.UTC(2026, 6, 23, 0, 0, tick++)).toISOString(),
   })
 
   assert.equal(client.connected, true)
@@ -45,6 +46,31 @@ test('MongoDB adapter creates indexes, aggregates drift and deduplicates thresho
     indexSha256: 'a'.repeat(64),
   })
   assert.equal(client.collection('registry_publications').documents.size, 1)
+
+  const selectorRequest = {
+    requestId: selectorRequestId('https://new-model.ai'),
+    origin: 'https://new-model.ai',
+    host: 'new-model.ai',
+    reason: 'missing_adapter',
+    extensionVersion: '0.1.0',
+    adapterVersionAtRequest: 0,
+  }
+  const requested = await database.requestSelectors(selectorRequest, { retentionSeconds: 3600 })
+  assert.equal(requested.created, true)
+  assert.equal(requested.request.status, 'pending')
+  assert.equal(requested.request.adapterVersionAtRequest, 0)
+  assert.equal((await database.requestSelectors(selectorRequest, { retentionSeconds: 3600 })).created, false)
+  assert.equal((await database.getSelectorRequests()).length, 1)
+  assert.equal((await database.fulfillSelectorRequest(selectorRequest.origin, {
+    adapterVersion: 1,
+    registryVersion: 2,
+    retentionSeconds: 3600,
+  })).status, 'fulfilled')
+  assert.equal((await database.requestSelectors({
+    ...selectorRequest,
+    reason: 'adapter_invalid',
+    adapterVersionAtRequest: 1,
+  }, { retentionSeconds: 3600 })).created, true)
 
   await database.close()
   assert.equal(client.closed, true)
@@ -90,7 +116,7 @@ class FakeCollection {
   }
 
   async findOneAndUpdate(filter, update) {
-    const id = identity(filter)
+    const id = filter._id ?? identity(filter)
     const current = this.documents.get(id) ?? { ...filter, ...update.$setOnInsert }
     applyUpdate(current, update)
     this.documents.set(id, current)
@@ -103,12 +129,28 @@ class FakeCollection {
     const current = this.documents.get(id) ?? { ...filter, ...update.$setOnInsert }
     applyUpdate(current, update)
     this.documents.set(id, current)
-    return { upsertedCount: exists ? 0 : 1 }
+    return { upsertedCount: exists ? 0 : 1, modifiedCount: exists ? 1 : 0 }
   }
 
   async findOne(filter) {
     const value = this.documents.get(filter._id ?? identity(filter))
     return value ? structuredClone(value) : null
+  }
+
+  find() {
+    let values = [...this.documents.values()]
+    return {
+      sort() {
+        return this
+      },
+      limit(limit) {
+        values = values.slice(0, limit)
+        return this
+      },
+      async toArray() {
+        return structuredClone(values)
+      },
+    }
   }
 }
 

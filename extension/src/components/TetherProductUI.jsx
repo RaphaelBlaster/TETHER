@@ -149,7 +149,8 @@ function StatusFact({ label, value, tone }) {
 function SetupSurface(props) {
   const {
     state, connectionState, mode, role, actionBusy, selectorBusy, siteAccessPending,
-    calibrationActive, startPending, onMode, onRole, onEnableSite, onCalibrate, onActivate,
+    selectorRequestPending, calibrationActive, startPending, onMode, onRole, onEnableSite,
+    onRequestSelectors, onCalibrate, onActivate,
     advancedOpen, onToggleAdvanced, advancedContent,
   } = props
   const site = state.site
@@ -160,6 +161,7 @@ function SetupSurface(props) {
   let buttonState = bridgeReady ? 'Ready' : 'Bridge offline'
   let buttonAction = onActivate
   let buttonDisabled = actionBusy || !bridgeReady
+  let showCalibrationFallback = false
 
   if (state.access === 'loading') {
     buttonLabel = 'Reading this tab…'; buttonState = 'Checking'; buttonDisabled = true
@@ -167,8 +169,25 @@ function SetupSurface(props) {
     buttonLabel = siteAccessPending ? 'Waiting for permission…' : `Allow TETHER on ${site?.label ?? 'this site'}`
     buttonState = 'Permission'; buttonAction = onEnableSite; buttonDisabled = siteAccessPending
   } else if (state.access === 'granted' && !isReady) {
-    buttonLabel = startPending || calibrationActive ? 'Select the requested controls on the page…' : 'Calibrate this tab'
-    buttonState = calibrationActive ? 'In progress' : 'Required'; buttonAction = onCalibrate; buttonDisabled = startPending || calibrationActive
+    if (site?.selectorRequestEligible) {
+      const requestStatus = selectorRequestPending ? 'submitting' : state.selectorRequest?.status
+      if (requestStatus === 'pending' || requestStatus === 'submitting') {
+        buttonLabel = requestStatus === 'submitting' ? 'Registering selector request…' : 'Selector request under consideration'
+        buttonState = requestStatus === 'submitting' ? 'Sending' : 'Hang tight'
+        buttonDisabled = true
+      } else {
+        buttonLabel = requestStatus === 'available' ? 'Retry published selectors' : 'Request selectors for this site'
+        buttonState = requestStatus === 'available' ? 'Published' : 'Request'
+        buttonAction = onRequestSelectors
+        buttonDisabled = selectorRequestPending
+      }
+      showCalibrationFallback = !calibrationActive
+    } else {
+      buttonLabel = startPending || calibrationActive ? 'Select the requested controls on the page…' : 'Calibrate this tab'
+      buttonState = calibrationActive ? 'In progress' : 'Required'
+      buttonAction = onCalibrate
+      buttonDisabled = startPending || calibrationActive
+    }
   } else if (isRestricted || state.access === 'error') {
     buttonLabel = isRestricted ? 'Open a browser-based AI chat' : 'TETHER is unavailable'
     buttonState = 'Unavailable'; buttonDisabled = true
@@ -191,12 +210,17 @@ function SetupSurface(props) {
         {mode === 'CROSS' && <Segment label="Role for this endpoint" value={role} disabled={Boolean(selectorBusy || actionBusy)} onChange={onRole} options={[{ value: 'MASTER', label: 'MASTER', hint: 'Drives first' }, { value: 'SLAVE', label: 'SLAVE', hint: 'Receives relay' }]} />}
 
         {state.error && <p className="product-error" role="alert">{state.error}</p>}
-        <button type="button" className="product-primary" disabled={buttonDisabled} aria-busy={actionBusy || siteAccessPending || startPending} onClick={buttonAction}>
+        <button type="button" className="product-primary" disabled={buttonDisabled} aria-busy={actionBusy || siteAccessPending || selectorRequestPending || startPending} onClick={buttonAction}>
           <span>{buttonLabel}</span><span className="product-primary__state">{buttonState}<Icon name="arrow" /></span>
         </button>
+        {showCalibrationFallback && (
+          <button type="button" className="setup-fallback" onClick={onCalibrate} disabled={startPending || calibrationActive}>
+            Need it now? Calibrate locally as a fallback
+          </button>
+        )}
         <div className="endpoint-facts">
           <StatusFact label="Current tab" value={site?.label ?? 'Unavailable'} />
-          <StatusFact label="Site controls" value={site?.hasAdapter ? 'Built in' : state.calibration?.state === 'valid' ? 'Calibrated' : 'Setup required'} />
+          <StatusFact label="Site controls" value={site?.hasAdapter ? (site.adapterSource === 'remote' ? 'Registry adapter' : 'Built in') : state.selectorRequest?.status === 'pending' ? 'Requested' : state.calibration?.state === 'valid' ? 'Calibrated' : 'Setup required'} />
           <StatusFact label="Ownership" value="This tab only" />
         </div>
       </section>

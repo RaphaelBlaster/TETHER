@@ -14,7 +14,7 @@ test('SQLite aggregates privacy-safe drift reports and creates one open job', ()
   let tick = 0
   const database = createRegistryDatabase({
     path: ':memory:',
-    now: () => `2026-07-23T00:00:0${tick++}.000Z`,
+    now: () => new Date(Date.UTC(2026, 6, 23, 0, 0, tick++)).toISOString(),
   })
 
   assert.equal(database.recordDrift(REPORT).reportCount, 1)
@@ -29,5 +29,29 @@ test('SQLite aggregates privacy-safe drift reports and creates one open job', ()
   const second = database.ensureMaintenanceJob(aggregate, 2)
   assert.equal(second.created, false)
   assert.equal(second.job.id, first.job.id)
+
+  const selectorRequest = {
+    requestId: 'b'.repeat(64),
+    origin: 'https://new-model.ai',
+    host: 'new-model.ai',
+    reason: 'missing_adapter',
+    extensionVersion: '0.1.0',
+    adapterVersionAtRequest: 0,
+  }
+  const requested = database.requestSelectors(selectorRequest, { retentionSeconds: 3600 })
+  assert.equal(requested.created, true)
+  assert.equal(requested.request.status, 'pending')
+  assert.equal(database.requestSelectors(selectorRequest, { retentionSeconds: 3600 }).created, false)
+  assert.equal(database.getSelectorRequests().length, 1)
+  assert.equal(database.fulfillSelectorRequest(selectorRequest.origin, {
+    adapterVersion: 1,
+    registryVersion: 2,
+    retentionSeconds: 3600,
+  }).status, 'fulfilled')
+  assert.equal(database.requestSelectors({
+    ...selectorRequest,
+    reason: 'adapter_invalid',
+    adapterVersionAtRequest: 1,
+  }, { retentionSeconds: 3600 }).created, true)
   database.close()
 })

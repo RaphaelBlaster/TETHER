@@ -77,6 +77,80 @@ export function createRegistryDatabase({ path, now = () => new Date().toISOStrin
       index_sha256 = excluded.index_sha256,
       observed_at = excluded.observed_at
   `)
+  const insertSelectorRequest = database.prepare(`
+    INSERT INTO selector_requests (
+      request_id, origin, host, status, reason, extension_version,
+      adapter_version_at_request, requested_at, updated_at, expires_at
+    ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(origin) DO UPDATE SET
+      request_id = excluded.request_id,
+      host = excluded.host,
+      status = 'pending',
+      reason = excluded.reason,
+      extension_version = excluded.extension_version,
+      adapter_version_at_request = excluded.adapter_version_at_request,
+      requested_at = excluded.requested_at,
+      updated_at = excluded.updated_at,
+      fulfilled_at = NULL,
+      fulfilled_adapter_version = NULL,
+      fulfilled_registry_version = NULL,
+      expires_at = excluded.expires_at
+    WHERE selector_requests.status = 'fulfilled'
+  `)
+  const readSelectorRequest = database.prepare(`
+    SELECT
+      request_id AS requestId,
+      origin,
+      host,
+      status,
+      reason,
+      extension_version AS extensionVersion,
+      adapter_version_at_request AS adapterVersionAtRequest,
+      requested_at AS requestedAt,
+      updated_at AS updatedAt,
+      fulfilled_at AS fulfilledAt,
+      fulfilled_adapter_version AS fulfilledAdapterVersion,
+      fulfilled_registry_version AS fulfilledRegistryVersion,
+      expires_at AS expiresAt
+    FROM selector_requests
+    WHERE origin = ?
+  `)
+  const listSelectorRequests = database.prepare(`
+    SELECT
+      request_id AS requestId,
+      origin,
+      host,
+      status,
+      reason,
+      extension_version AS extensionVersion,
+      adapter_version_at_request AS adapterVersionAtRequest,
+      requested_at AS requestedAt,
+      updated_at AS updatedAt,
+      fulfilled_at AS fulfilledAt,
+      fulfilled_adapter_version AS fulfilledAdapterVersion,
+      fulfilled_registry_version AS fulfilledRegistryVersion,
+      expires_at AS expiresAt
+    FROM selector_requests
+    ORDER BY
+      CASE status WHEN 'pending' THEN 0 ELSE 1 END,
+      requested_at ASC
+    LIMIT ?
+  `)
+  const fulfillSelectorRequest = database.prepare(`
+    UPDATE selector_requests
+    SET
+      status = 'fulfilled',
+      fulfilled_at = ?,
+      fulfilled_adapter_version = ?,
+      fulfilled_registry_version = ?,
+      updated_at = ?,
+      expires_at = ?
+    WHERE origin = ?
+  `)
+  const pruneSelectorRequests = database.prepare(`
+    DELETE FROM selector_requests
+    WHERE expires_at <= ?
+  `)
 
   return {
     recordDrift(report) {
@@ -123,6 +197,54 @@ export function createRegistryDatabase({ path, now = () => new Date().toISOStrin
 
     recordPublication({ registryVersion, generatedAt, indexSha256 }) {
       recordPublicationStatement.run(registryVersion, generatedAt, indexSha256, now())
+    },
+
+    requestSelectors(request, { retentionSeconds }) {
+      const timestamp = now()
+      pruneSelectorRequests.run(timestamp)
+      const expiresAt = addSeconds(timestamp, retentionSeconds)
+      const result = insertSelectorRequest.run(
+        request.requestId,
+        request.origin,
+        request.host,
+        request.reason,
+        request.extensionVersion,
+        request.adapterVersionAtRequest,
+        timestamp,
+        timestamp,
+        expiresAt,
+      )
+      return {
+        created: result.changes === 1,
+        request: readSelectorRequest.get(request.origin),
+      }
+    },
+
+    getSelectorRequest(origin) {
+      pruneSelectorRequests.run(now())
+      return readSelectorRequest.get(origin) ?? null
+    },
+
+    getSelectorRequests({ limit = 250 } = {}) {
+      pruneSelectorRequests.run(now())
+      return listSelectorRequests.all(limit)
+    },
+
+    fulfillSelectorRequest(origin, {
+      adapterVersion,
+      registryVersion,
+      retentionSeconds,
+    }) {
+      const timestamp = now()
+      fulfillSelectorRequest.run(
+        timestamp,
+        adapterVersion,
+        registryVersion,
+        timestamp,
+        addSeconds(timestamp, retentionSeconds),
+        origin,
+      )
+      return readSelectorRequest.get(origin) ?? null
     },
 
     close() {
@@ -172,7 +294,33 @@ function migrate(database) {
       index_sha256 TEXT NOT NULL CHECK(length(index_sha256) = 64),
       observed_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS selector_requests (
+      request_id TEXT PRIMARY KEY CHECK(length(request_id) = 64),
+      origin TEXT NOT NULL UNIQUE,
+      host TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'fulfilled')),
+      reason TEXT NOT NULL CHECK(reason IN ('missing_adapter', 'adapter_invalid')),
+      extension_version TEXT NOT NULL,
+      adapter_version_at_request INTEGER NOT NULL CHECK(adapter_version_at_request >= 0),
+      requested_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      fulfilled_at TEXT,
+      fulfilled_adapter_version INTEGER,
+      fulfilled_registry_version INTEGER,
+      expires_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS selector_requests_status_idx
+      ON selector_requests(status, requested_at);
+
+    CREATE INDEX IF NOT EXISTS selector_requests_expiry_idx
+      ON selector_requests(expires_at);
   `)
+}
+
+function addSeconds(timestamp, seconds) {
+  return new Date(Date.parse(timestamp) + (seconds * 1000)).toISOString()
 }
 
 function transaction(database, operation) {

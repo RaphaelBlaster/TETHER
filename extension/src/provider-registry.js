@@ -201,6 +201,20 @@ const RESTRICTED_WEB_ORIGINS = new Set([
   'https://chrome.google.com',
   'https://microsoftedge.microsoft.com',
 ])
+const AI_HOST_SIGNAL = /(?:^|[.-])(ai|chat|llm|model|gpt|claude|gemini|deepseek|mistral|perplexity|copilot|poe|tinker|arena|huggingface)(?:[.-]|$)/i
+
+export function isLikelyAiSite(originOrUrl) {
+  try {
+    const parsed = new URL(originOrUrl)
+    const host = parsed.hostname.toLowerCase()
+    return Boolean(matchProviderByOrigin(parsed.href)) ||
+      host.endsWith('.ai') ||
+      host === 'ai' ||
+      AI_HOST_SIGNAL.test(host)
+  } catch {
+    return false
+  }
+}
 
 export function inspectSite(url) {
   let parsed
@@ -227,6 +241,7 @@ export function inspectSite(url) {
     conversationId,
     hasAdapter: Boolean(provider),
     providerKind: provider ? 'llm' : 'generic',
+    selectorRequestEligible: isLikelyAiSite(parsed.href),
   }
 }
 

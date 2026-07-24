@@ -15,7 +15,12 @@ export function loadConfig(environment = process.env) {
     rateWindowSeconds: integer(environment.DRIFT_RATE_WINDOW_SECONDS, 60, { min: 1, max: 86_400 }),
     dedupeSeconds: integer(environment.DRIFT_DEDUPE_SECONDS, 300, { min: 1, max: 86_400 }),
     maintenanceThreshold: integer(environment.DRIFT_JOB_THRESHOLD, 3, { min: 1, max: 1_000_000 }),
+    selectorRequestCacheSeconds: integer(environment.SELECTOR_REQUEST_CACHE_SECONDS, 300, { min: 30, max: 86_400 }),
+    selectorRequestRetentionSeconds: integer(environment.SELECTOR_REQUEST_RETENTION_SECONDS, 7_776_000, { min: 86_400, max: 31_536_000 }),
     rateLimitSalt: environment.RATE_LIMIT_SALT || 'tether-development-only',
+    operatorPassword: environment.TETHER_OPERATOR_PASSWORD || null,
+    operatorSessionSecret: environment.TETHER_OPERATOR_SESSION_SECRET || null,
+    operatorSessionSeconds: integer(environment.TETHER_OPERATOR_SESSION_SECONDS, 3600, { min: 300, max: 86_400 }),
     maxRequestBytes: 2 * 1024,
   })
 }

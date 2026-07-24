@@ -24,3 +24,7 @@ services:
         sync: false
       - key: RATE_LIMIT_SALT
         generateValue: true
+      - key: TETHER_OPERATOR_PASSWORD
+        sync: false
+      - key: TETHER_OPERATOR_SESSION_SECRET
+        generateValue: true

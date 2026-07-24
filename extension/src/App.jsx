@@ -66,7 +66,7 @@ function usePanelState() {
   React.useEffect(() => {
     if (!globalThis.chrome?.runtime) return undefined
     const listener = (message) => {
-      if (['panel.stateChanged', 'browserSession.stateChanged', 'calibration.stateChanged', 'injection.stateChanged', 'responseCalibration.stateChanged', 'extraction.stateChanged'].includes(message?.type)) {
+      if (['panel.stateChanged', 'browserSession.stateChanged', 'selectorRequest.stateChanged', 'calibration.stateChanged', 'injection.stateChanged', 'responseCalibration.stateChanged', 'extraction.stateChanged'].includes(message?.type)) {
         refresh().catch(() => {})
       }
     }
@@ -89,6 +89,8 @@ function App() {
   const manualSelectionPendingRef = React.useRef(false)
   const cancellationPendingRef = React.useRef(false)
   const responseCalibrationPendingRef = React.useRef(false)
+  const selectorRequestPendingRef = React.useRef(false)
+  const [selectorRequestPending, setSelectorRequestPending] = React.useState(false)
   const [mode, setMode] = React.useState('CLI')
   const [crossRoleChoice, setCrossRoleChoice] = React.useState('MASTER')
   const selectorPendingRef = React.useRef(false)
@@ -178,12 +180,14 @@ function App() {
       injectionPendingRef.current = false
       extractionPendingRef.current = false
       responseCalibrationPendingRef.current = false
+      selectorRequestPendingRef.current = false
       manualSelectionPendingRef.current = false
       cancellationPendingRef.current = false
       setConnectionMoment(null)
       setActivationAction(null)
       setSiteAccessPending(false)
       setStartPending(false)
+      setSelectorRequestPending(false)
       resetPanelForTab()
       port.postMessage({ type: 'panel.bind', tabId })
     }
@@ -210,6 +214,25 @@ function App() {
       port.disconnect()
     }
   }, [captureBinding, isCurrentBinding, refreshPanelState, resetPanelForTab, setPanelState])
+
+  React.useEffect(() => {
+    if (!globalThis.chrome?.runtime || panelState.selectorRequest?.status !== 'pending') {
+      return undefined
+    }
+    const pollSeconds = Math.min(
+      900,
+      Math.max(30, panelState.selectorRequest.nextPollAfterSeconds ?? 300),
+    )
+    const timeout = setTimeout(() => {
+      refreshPanelState().catch(() => {})
+    }, pollSeconds * 1000)
+    return () => clearTimeout(timeout)
+  }, [
+    panelState.selectorRequest?.nextPollAfterSeconds,
+    panelState.selectorRequest?.requestedAt,
+    panelState.selectorRequest?.status,
+    refreshPanelState,
+  ])
 
   const operationStage = panelState.calibrationOperation?.stage
   const calibrationActive = ['starting', 'selecting_composer', 'selecting_send'].includes(operationStage)
@@ -246,6 +269,39 @@ function App() {
         siteAccessPendingRef.current = false
         if (isCurrentBinding(binding)) setSiteAccessPending(false)
       }
+    }
+  }
+
+  async function requestSelectors() {
+    if (selectorRequestPendingRef.current) return
+    const binding = captureBinding()
+    selectorRequestPendingRef.current = true
+    setSelectorRequestPending(true)
+    setPanelState((current) => ({
+      ...current,
+      error: null,
+      selectorRequest: {
+        ...(current.selectorRequest ?? {}),
+        status: 'submitting',
+        origin: current.site?.origin ?? null,
+      },
+    }))
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'selectorRequest.submit' })
+      if (!response?.ok) throw new Error(response?.error ?? 'Selector request could not be registered')
+      if (isCurrentBinding(binding)) {
+        setPanelState((current) => ({
+          ...current,
+          selectorRequest: response.selectorRequest,
+          error: null,
+        }))
+        await refreshPanelState()
+      }
+    } catch (error) {
+      showError(error, binding)
+    } finally {
+      selectorRequestPendingRef.current = false
+      if (isCurrentBinding(binding)) setSelectorRequestPending(false)
     }
   }
 
@@ -676,6 +732,43 @@ function App() {
     )
   }
 
+  function selectorRequestContent() {
+    if (!panelState.site?.selectorRequestEligible) return null
+    const request = panelState.selectorRequest
+    const status = selectorRequestPending ? 'submitting' : request?.status
+    if (status === 'pending' || status === 'submitting') {
+      return (
+        <>
+          <h3>{status === 'submitting' ? 'Registering selector request' : 'Selector request under consideration'}</h3>
+          <p>{status === 'submitting' ? 'TETHER is registering one idempotent request for this origin.' : 'This site is already in the maintenance queue. Hang tight—TETHER will detect the published adapter automatically.'}</p>
+          <button type="button" className="calibration-button" disabled>
+            {status === 'submitting' ? 'Registering…' : 'Request registered'}
+          </button>
+        </>
+      )
+    }
+    if (status === 'available' && panelState.site?.hasAdapter) {
+      return (
+        <>
+          <h3>Published selectors available</h3>
+          <p>Adapter v{request?.adapterVersion ?? panelState.site.adapterVersion ?? '—'} is available for this exact origin. If it no longer works, request an updated version.</p>
+          <button type="button" className="calibration-button calibration-button--secondary" onClick={requestSelectors} disabled={selectorRequestPending}>
+            Request updated selectors
+          </button>
+        </>
+      )
+    }
+    return (
+      <>
+        <h3>Request maintained selectors</h3>
+        <p>Send only this site’s clean origin to the TETHER maintenance queue. No chat URL, account ID, prompts, or page content is included.</p>
+        <button type="button" className="calibration-button" onClick={requestSelectors} disabled={selectorRequestPending}>
+          {selectorRequestPending ? 'Registering…' : 'Request selectors'}
+        </button>
+      </>
+    )
+  }
+
   function diagnostics() {
     const data = panelState.calibration?.diagnostics
     if (!data) return null
@@ -764,6 +857,7 @@ function App() {
   const isActive = panelState.activation?.state === 'active'
   const advancedContent = (
     <div className="product-tools">
+      {panelState.site?.selectorRequestEligible && <section className="product-tool-card">{selectorRequestContent()}</section>}
       {!calibrationActive && <section className="product-tool-card">{calibrationContent()}</section>}
       {isActive && panelState.calibration?.state === 'valid' && <section className="product-tool-card">{responseCalibrationContent()}</section>}
       {isActive && panelState.calibration?.state === 'valid' && !responseCalibrationActive && <section className="product-tool-card">{injectionContent()}</section>}
@@ -781,6 +875,7 @@ function App() {
       actionKind={activationAction}
       selectorBusy={selectorAction}
       siteAccessPending={siteAccessPending}
+      selectorRequestPending={selectorRequestPending}
       calibrationActive={calibrationActive}
       startPending={startPending}
       connectionMoment={connectionMoment}
@@ -789,6 +884,7 @@ function App() {
       onMode={selectMode}
       onRole={selectCrossRole}
       onEnableSite={enableSite}
+      onRequestSelectors={requestSelectors}
       onCalibrate={startCalibration}
       onActivate={() => changeActivation('browserSession.activate')}
       onDeactivate={() => changeActivation('browserSession.deactivate')}

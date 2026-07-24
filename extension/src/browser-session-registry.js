@@ -106,10 +106,11 @@ export function createBrowserSessionRegistry({
     const provider = detectProvider(tab.url)
     if (!provider) throw new BrowserSessionError('restricted_tab', 'This browser page does not allow TETHER access')
     const calibration = calibrationProfiles[provider.calibrationKey]
-    if (!provider.hasAdapter && (!calibration || calibration.version !== 1)) {
+    const hasAdapter = provider.hasAdapter || configuration.hasAdapter === true
+    if (!hasAdapter && (!calibration || calibration.version !== 1)) {
       throw new BrowserSessionError('calibration_required', 'This site must be calibrated first')
     }
-    if (!provider.hasAdapter && !calibrationValidation?.valid) {
+    if (!hasAdapter && !calibrationValidation?.valid) {
       throw new BrowserSessionError('calibration_invalid', 'The saved controls must be validated before activation')
     }
     const timestamp = now()
