@@ -11,6 +11,7 @@
     "128": "icons/tether-128.png"
   },
   "permissions": ["activeTab", "debugger", "scripting", "sidePanel", "storage", "tabs"],
+  "host_permissions": ["https://tether-provider-registry.onrender.com/*"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js",

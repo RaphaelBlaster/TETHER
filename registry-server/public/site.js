@@ -65,5 +65,6 @@ async function loadRegistryStatus() {
   }
 }
 
-document.querySelector('#year').textContent = String(new Date().getFullYear())
-loadRegistryStatus()
+const year = document.querySelector('#year')
+if (year) year.textContent = String(new Date().getFullYear())
+if (document.querySelector('#registry-status')) loadRegistryStatus()

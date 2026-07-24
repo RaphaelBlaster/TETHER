@@ -55,6 +55,25 @@ test('registry serves conditional manifests and accepts bounded drift reports', 
   assert.match(script.headers.get('content-type'), /^text\/javascript/)
   assert.equal(script.headers.get('cache-control'), 'no-cache')
 
+  const browserNotFound = await fetch(`${base}/missing-page`, {
+    headers: { accept: 'text/html,application/xhtml+xml' },
+  })
+  assert.equal(browserNotFound.status, 404)
+  assert.match(browserNotFound.headers.get('content-type'), /^text\/html/)
+  assert.match(await browserNotFound.text(), /404 · Route not found/)
+
+  const apiNotFound = await fetch(`${base}/v1/missing`, {
+    headers: { accept: 'text/html,application/json' },
+  })
+  assert.equal(apiNotFound.status, 404)
+  assert.match(apiNotFound.headers.get('content-type'), /^application\/json/)
+  assert.deepEqual(Object.keys((await apiNotFound.json()).error).sort(), ['code', 'message', 'requestId'])
+
+  const wrongMethod = await fetch(`${base}/healthz`, { method: 'POST' })
+  assert.equal(wrongMethod.status, 405)
+  assert.equal(wrongMethod.headers.get('allow'), 'GET')
+  assert.equal((await wrongMethod.json()).error.code, 'method_not_allowed')
+
   const manifestResponse = await fetch(
     `${base}/v1/adapters?origin=${encodeURIComponent('https://tinker.thinkingmachines.ai')}`,
   )

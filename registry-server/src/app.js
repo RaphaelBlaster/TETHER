@@ -14,6 +14,7 @@ const DRIFT_ERROR_CODES = new Set([
   'completion_signal_missing',
   'manifest_page_invalid',
 ])
+const NOT_FOUND_PAGE = readFileSync(new URL('../public/404.html', import.meta.url))
 const STATIC_SITE = new Map([
   ['/', {
     body: readFileSync(new URL('../public/index.html', import.meta.url)),
@@ -164,6 +165,15 @@ export function createRegistryServer({
         return
       }
 
+      const allowedMethods = allowedMethodsForPath(url.pathname)
+      if (allowedMethods) {
+        response.setHeader('allow', allowedMethods.join(', '))
+        throw httpError(405, 'method_not_allowed', 'Method not allowed for this route')
+      }
+      if (isBrowserNavigation(request, url.pathname)) {
+        sendNotFoundPage(request, response)
+        return
+      }
       throw httpError(404, 'not_found', 'Route not found')
     } catch (error) {
       const status = Number.isInteger(error.status) ? error.status : 500
@@ -267,6 +277,37 @@ function sendStaticAsset(request, response, asset) {
     'content-length': asset.body.length,
   })
   response.end(request.method === 'HEAD' ? undefined : asset.body)
+}
+
+function sendNotFoundPage(request, response) {
+  response.setHeader('content-security-policy', SITE_CONTENT_SECURITY_POLICY)
+  response.writeHead(404, {
+    'cache-control': 'no-cache',
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': NOT_FOUND_PAGE.length,
+  })
+  response.end(request.method === 'HEAD' ? undefined : NOT_FOUND_PAGE)
+}
+
+function isBrowserNavigation(request, pathname) {
+  if ((request.method !== 'GET' && request.method !== 'HEAD') || pathname.startsWith('/v1/')) {
+    return false
+  }
+  return String(request.headers.accept || '')
+    .split(',')
+    .some((value) => value.trim().toLowerCase().startsWith('text/html'))
+}
+
+function allowedMethodsForPath(pathname) {
+  if (STATIC_SITE.has(pathname)) return ['GET', 'HEAD']
+  if (pathname === '/healthz' ||
+      pathname === '/v1/adapters/index.json' ||
+      pathname === '/v1/adapters/index.sig.json' ||
+      pathname === '/v1/adapters') {
+    return ['GET']
+  }
+  if (pathname === '/v1/drift-reports') return ['POST']
+  return null
 }
 
 function setSecurityHeaders(response, requestId) {

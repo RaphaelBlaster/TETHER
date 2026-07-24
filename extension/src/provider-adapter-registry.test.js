@@ -4,7 +4,9 @@ import test from 'node:test'
 import {
   MAX_MANIFEST_BYTES,
   createDriftReport,
+  createHttpProviderAdapterClient,
   createPackagedProviderManifests,
+  createProviderAdapterEndpointResolver,
   createProviderAdapterRegistry,
   validateProviderAdapterManifest,
 } from './provider-adapter-registry.js'
@@ -67,6 +69,24 @@ test('unavailable registry falls back to the packaged adapter', async () => {
   const resolved = await registry.resolve(ORIGIN, { refresh: true })
   assert.equal(resolved.adapterVersion, 1)
   assert.equal(resolved.source, 'packaged')
+})
+
+test('an equal published adapter records its ETag and avoids downloading it again', async () => {
+  const etags = []
+  const registry = createProviderAdapterRegistry({
+    packagedManifests: [manifest(1)],
+    fetchManifest: async ({ etag }) => {
+      etags.push(etag)
+      return etag
+        ? { notModified: true }
+        : { manifest: manifest(1), etag: '"published-v1"' }
+    },
+    storage: memoryStorage(),
+  })
+
+  assert.equal((await registry.resolve(ORIGIN, { refresh: true })).source, 'packaged')
+  assert.equal((await registry.resolve(ORIGIN, { refresh: true })).source, 'packaged')
+  assert.deepEqual(etags, [null, '"published-v1"'])
 })
 
 test('packaged adapters preserve all four built-in providers', async () => {
@@ -141,6 +161,36 @@ test('registry timeout is bounded and the drift report contains metadata only', 
       extensionVersion: '0.0.0',
       errorCode: 'assistant_selector_missing',
     },
+  )
+})
+
+test('HTTP registry client targets the production API with conditional JSON requests', async () => {
+  const requests = []
+  const endpointForOrigin = createProviderAdapterEndpointResolver(
+    'https://tether-provider-registry.onrender.com',
+  )
+  const client = createHttpProviderAdapterClient({
+    endpointForOrigin,
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options })
+      return new Response(null, { status: 304 })
+    },
+  })
+
+  assert.deepEqual(await client({
+    origin: ORIGIN,
+    etag: '"manifest-etag"',
+    signal: new AbortController().signal,
+  }), { notModified: true })
+  assert.equal(
+    requests[0].url,
+    `https://tether-provider-registry.onrender.com/v1/adapters?origin=${encodeURIComponent(ORIGIN)}`,
+  )
+  assert.equal(requests[0].options.headers.Accept, 'application/json')
+  assert.equal(requests[0].options.headers['If-None-Match'], '"manifest-etag"')
+  assert.throws(
+    () => createProviderAdapterEndpointResolver('http://registry.example'),
+    /HTTPS base URL/,
   )
 })
 

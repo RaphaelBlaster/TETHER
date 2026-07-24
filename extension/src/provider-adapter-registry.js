@@ -183,7 +183,17 @@ export function createProviderAdapterRegistry({
       })
       if (remote?.notModified) return fallback
       const manifest = validateProviderAdapterManifest(remote?.manifest ?? remote, normalized)
-      if (fallback && manifest.adapterVersion <= fallback.adapterVersion) return fallback
+      if (fallback && manifest.adapterVersion <= fallback.adapterVersion) {
+        if (remote?.etag && entry?.etag !== remote.etag) {
+          cache.origins[normalized] = {
+            ...(entry ?? { versions: {} }),
+            etag: remote.etag,
+            checkedAt: now(),
+          }
+          await persist(cache)
+        }
+        return fallback
+      }
       await accept(normalized, manifest, { etag: remote?.etag ?? null })
       return withSource(manifest, 'remote')
     } catch {
@@ -279,9 +289,11 @@ export function createHttpProviderAdapterClient({
   }
   return async function fetchManifest({ origin, etag, signal }) {
     const endpoint = endpointForOrigin(origin)
+    const headers = { Accept: 'application/json' }
+    if (etag) headers['If-None-Match'] = etag
     const response = await fetchImpl(endpoint, {
       method: 'GET',
-      headers: etag ? { 'If-None-Match': etag } : {},
+      headers,
       signal,
       credentials: 'omit',
       cache: 'no-store',
@@ -298,6 +310,27 @@ export function createHttpProviderAdapterClient({
       throw coded('manifest_too_large', `Provider adapter exceeds ${maxBytes} bytes`)
     }
     return { manifest: text, etag: response.headers.get('etag') }
+  }
+}
+
+export function createProviderAdapterEndpointResolver(baseUrl) {
+  let base
+  try {
+    base = new URL(baseUrl)
+  } catch {
+    throw new TypeError('Provider adapter registry URL is invalid')
+  }
+  if (base.protocol !== 'https:' ||
+      base.username ||
+      base.password ||
+      base.search ||
+      base.hash) {
+    throw new TypeError('Provider adapter registry must be an HTTPS base URL')
+  }
+  return function endpointForOrigin(origin) {
+    const endpoint = new URL('/v1/adapters', base)
+    endpoint.searchParams.set('origin', normalizeOrigin(origin))
+    return endpoint.href
   }
 }
 

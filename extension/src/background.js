@@ -24,10 +24,13 @@ import {
   createResponseCalibrationSession,
 } from './response-calibration/response-calibration-session.js'
 import {
+  createHttpProviderAdapterClient,
   createPackagedProviderManifests,
+  createProviderAdapterEndpointResolver,
   createProviderAdapterRegistry,
 } from './provider-adapter-registry.js'
 
+const PROVIDER_ADAPTER_REGISTRY_URL = 'https://tether-provider-registry.onrender.com'
 const TRANSPORT_MODE_KEY = 'tetherTransportMode'
 const TETHER_THEME_KEY = 'tetherTheme'
 let transportMode = 'CLI'
@@ -138,9 +141,13 @@ const panelReady = sessionReady.then(async (sessions) => {
   await tabPanels.initialize(sessions, activeTabs)
 })
 const lifecycleReady = Promise.all([sessionReady, calibrationReady, responseCalibrationReady, panelReady])
+const fetchProviderAdapter = createHttpProviderAdapterClient({
+  endpointForOrigin: createProviderAdapterEndpointResolver(PROVIDER_ADAPTER_REGISTRY_URL),
+})
 const providerAdapters = createProviderAdapterRegistry({
   packagedManifests: createPackagedProviderManifests(PROVIDERS),
   storage: chrome.storage.local,
+  fetchManifest: fetchProviderAdapter,
 })
 // The adapter path deliberately uses the same self-contained direct-CDP
 // pipeline that proved reliable in the replacement extension. It does not
