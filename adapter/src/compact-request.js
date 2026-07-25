@@ -97,10 +97,9 @@ function splitInput(input, initial, conversation, connectionId) {
 }
 
 function browserVisibleInput(input) {
-  const toolResults = input.filter((item) => isToolResult(item))
-  if (toolResults.length) return toolResults
-  const users = input.filter((item) => item?.type === 'message' && item?.role === 'user')
-  return users.length ? [users.at(-1)] : []
+  return input.filter((item) =>
+    isToolResult(item) ||
+    (item?.type === 'message' && item?.role === 'user'))
 }
 
 function isToolResult(item) {

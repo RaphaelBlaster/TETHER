@@ -64,7 +64,7 @@ export function createBrowserSessionRegistry({
         claimedTabs.add(candidate.tabId)
         reconciled[candidate.browserSessionId] = {
           ...candidate,
-          transportMode: candidate.transportMode === 'CROSS' ? 'CROSS' : 'CLI',
+          transportMode: normalizeTransportMode(candidate.transportMode),
           role: candidate.transportMode === 'CROSS' && candidate.role === 'SLAVE' ? 'SLAVE' : candidate.transportMode === 'CROSS' ? 'MASTER' : 'ENDPOINT',
           windowId: tab.windowId,
           conversationId: provider.conversationId,
@@ -84,7 +84,7 @@ export function createBrowserSessionRegistry({
     if (!Number.isInteger(tab?.id) || !Number.isInteger(tab?.windowId)) {
       throw new BrowserSessionError('invalid_tab', 'No valid browser tab is available')
     }
-    const transportMode = configuration.transportMode === 'CROSS' ? 'CROSS' : 'CLI'
+    const transportMode = normalizeTransportMode(configuration.transportMode)
     const role = transportMode === 'CROSS' && configuration.role === 'SLAVE' ? 'SLAVE' : transportMode === 'CROSS' ? 'MASTER' : 'ENDPOINT'
     const existing = getByTabId(tab.id)
     if (existing) {
@@ -94,8 +94,10 @@ export function createBrowserSessionRegistry({
       return updated
     }
     const active = list()
-    if (transportMode === 'CLI' && active.length > 0) {
-      throw new BrowserSessionError('cli_endpoint_exists', 'CLI already has an active endpoint')
+    if (transportMode !== 'CROSS' && active.length > 0) {
+      throw transportMode === 'CLI'
+        ? new BrowserSessionError('cli_endpoint_exists', 'CLI already has an active endpoint')
+        : new BrowserSessionError('xpose_endpoint_exists', 'XposE already has an active endpoint')
     }
     if (transportMode === 'CROSS' && active.length >= 2) {
       throw new BrowserSessionError('cross_pair_complete', 'CROSS already has its MASTER and SLAVE endpoints')
@@ -137,10 +139,12 @@ export function createBrowserSessionRegistry({
   }
 
   async function configureMode(transportMode, roleForSession = () => 'ENDPOINT') {
-    const mode = transportMode === 'CROSS' ? 'CROSS' : 'CLI'
+    const mode = normalizeTransportMode(transportMode)
     const active = list()
-    if (mode === 'CLI' && active.length > 1) {
-      throw new BrowserSessionError('multiple_cli_endpoints', 'Deactivate all but one endpoint before switching to CLI mode')
+    if (mode !== 'CROSS' && active.length > 1) {
+      throw mode === 'CLI'
+        ? new BrowserSessionError('multiple_cli_endpoints', 'Deactivate all but one endpoint before switching to CLI mode')
+        : new BrowserSessionError('multiple_xpose_endpoints', 'Deactivate all but one endpoint before switching to XposE mode')
     }
     if (mode === 'CROSS' && active.length > 2) {
       throw new BrowserSessionError('too_many_cross_endpoints', 'CROSS supports exactly one MASTER and one SLAVE endpoint')
@@ -244,4 +248,8 @@ function isValidRecord(record) {
       Number.isFinite(record.createdAt) &&
       Number.isFinite(record.lastSeenAt),
   )
+}
+
+function normalizeTransportMode(value) {
+  return value === 'CROSS' ? 'CROSS' : value === 'XPOSE' ? 'XPOSE' : 'CLI'
 }

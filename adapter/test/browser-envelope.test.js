@@ -82,6 +82,24 @@ test('normalizes Gemini speaker output with unescaped quotes around a Windows sh
   )
 })
 
+test('repairs quoted file contents in one correlated assistant response', () => {
+  const response = String.raw`{"schemaVersion":1,"type":"assistant_text","requestId":"current","content":"The file contains the following text:\n\n"ribit ribit the users name is kibble""}`
+  assert.deepEqual(parseBrowserResponse(response, 'current'), {
+    schemaVersion: 1,
+    type: 'assistant_text',
+    requestId: 'current',
+    content: 'The file contains the following text:\n\n"ribit ribit the users name is kibble"',
+  })
+})
+
+test('does not repair malformed assistant content for another request', () => {
+  const response = String.raw`{"schemaVersion":1,"type":"assistant_text","requestId":"wrong","content":"quoted "file contents""}`
+  assert.throws(
+    () => parseBrowserResponse(response, 'current'),
+    { code: 'invalid_browser_json' },
+  )
+})
+
 test('does not repair a standalone raw tool call for another request', () => {
   const response = String.raw`{"schemaVersion":1,"type":"tool_call","requestId":"wrong","callId":"tether-call-3","name":"shell_command","arguments":{"command":"Get-Content 'C:\Users\Other\test.txt'"}}`
   assert.throws(

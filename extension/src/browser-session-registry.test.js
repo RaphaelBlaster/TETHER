@@ -118,6 +118,23 @@ test('unknown calibrated origin activates without a provider adapter', async () 
   assert.equal(session.conversationId, null)
 })
 
+test('XposE records one explicit local API endpoint', async () => {
+  const { registry } = harness({ uuids: ['browser-xpose', 'browser-other'] })
+  await registry.initialize()
+  const session = await registry.activate(
+    tab(1),
+    profiles,
+    validCalibration,
+    { transportMode: 'XPOSE' },
+  )
+  assert.equal(session.transportMode, 'XPOSE')
+  assert.equal(session.role, 'ENDPOINT')
+  await assert.rejects(
+    () => registry.activate(tab(2), profiles, validCalibration, { transportMode: 'XPOSE' }),
+    { code: 'xpose_endpoint_exists' },
+  )
+})
+
 test('a remote registry adapter activates an AI site without local calibration', async () => {
   const { registry } = harness({ uuids: ['browser-remote'] })
   await registry.initialize()

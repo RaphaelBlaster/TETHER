@@ -22,7 +22,8 @@ export function createBrowserTurnController({
   const operations = new Map()
   const settled = new Map()
 
-  async function request(codexRequest, { connectionId = null, selection = null } = {}) {
+  async function request(codexRequest, { connectionId = null, selection = null, signal = null } = {}) {
+    if (signal?.aborted) throw coded('request_cancelled', 'Request was cancelled')
     const { registration, session } = selection ?? registry.selectExactlyOne()
     const requestId = codexRequestId(codexRequest, connectionId)
     const key = correlationKey(registration.extensionInstanceId, session.browserSessionId, requestId)
@@ -48,6 +49,11 @@ export function createBrowserTurnController({
       peer: registration.peer,
       frames, frameIndex: 0, repairCount: 0,
       promise, resolve: resolveRequest, reject: rejectRequest, timeoutId: null,
+      signal, abortListener: null,
+    }
+    if (signal) {
+      operation.abortListener = () => cancelOperation(operation)
+      signal.addEventListener('abort', operation.abortListener, { once: true })
     }
     operations.set(key, operation)
     dispatchFrame(operation)
@@ -186,13 +192,13 @@ export function createBrowserTurnController({
         bootstrapVersion: installsBootstrap ? BOOTSTRAP_VERSION : previousConversation?.bootstrapVersion ?? null,
         browserSessionId: operation.browserSessionId,
         lastRequestId: operation.requestId,
-        lastDeliveredBrowserDelta: operation.codexRequest.input,
         ...compactState,
         installedInstallKeys: [],
         updatedAt: Date.now(),
       })
       remember(settled, operation.baseKey, envelope, maxSettled)
       operations.delete(operation.baseKey)
+      cleanupOperation(operation)
       operation.resolve(envelope)
     } catch (error) {
       rejectOperation(operation, error)
@@ -283,7 +289,31 @@ export function createBrowserTurnController({
     operations.delete(operation.baseKey)
     if (operation.key) pending.delete(operation.key)
     if (operation.timeoutId !== null) cancelSchedule(operation.timeoutId)
+    cleanupOperation(operation)
     operation.reject(error)
+  }
+
+  function cancelOperation(operation) {
+    if (!operations.has(operation.baseKey)) return
+    if (operation.key) pending.delete(operation.key)
+    if (operation.timeoutId !== null) cancelSchedule(operation.timeoutId)
+    try {
+      operation.peer.sendJson({
+        protocol: EXTENSION_PROTOCOL,
+        version: EXTENSION_PROTOCOL_VERSION,
+        type: 'browser_cancel',
+        requestId: operation.frames[operation.frameIndex]?.requestId ?? operation.requestId,
+        browserSessionId: operation.browserSessionId,
+      })
+    } catch (error) { void error }
+    rejectOperation(operation, coded('request_cancelled', 'Request was cancelled'))
+  }
+
+  function cleanupOperation(operation) {
+    if (operation.signal && operation.abortListener) {
+      operation.signal.removeEventListener('abort', operation.abortListener)
+      operation.abortListener = null
+    }
   }
 
   return { request, complete, disconnect }

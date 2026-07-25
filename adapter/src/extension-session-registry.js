@@ -73,12 +73,36 @@ export function createExtensionSessionRegistry() {
     return { mode: 'CLI', endpoint: candidates[0] }
   }
 
+  function selectXposeEndpoint() {
+    const candidates = []
+    let cliCount = 0
+    for (const registration of registrations.values()) {
+      for (const session of registration.sessions) {
+        if (session.transportMode === 'XPOSE') candidates.push({ registration, session })
+        else if (session.transportMode === 'CLI') cliCount += 1
+      }
+    }
+    const crossCount = [...registrations.values()]
+      .flatMap((registration) => registration.sessions)
+      .filter((session) => session.transportMode === 'CROSS').length
+    if (crossCount > 0) throw coded('cross_not_supported', 'XposE requires one single endpoint; CROSS endpoints are not eligible')
+    if (candidates.length === 0 && cliCount > 0) throw coded('xpose_mode_required', 'Activate the browser tab in XposE mode')
+    if (candidates.length === 0) throw coded('no_active_session', 'No active XposE browser session is registered')
+    if (candidates.length > 1) {
+      throw Object.assign(coded('ambiguous_session', 'More than one active browser session is registered'), {
+        count: candidates.length,
+      })
+    }
+    return candidates[0]
+  }
+
   return {
     register,
     update,
     unregister,
     selectExactlyOne,
     selectRoute,
+    selectXposeEndpoint,
     get: (extensionInstanceId) => registrations.get(extensionInstanceId) ?? null,
     list: () => [...registrations.values()],
   }
@@ -103,6 +127,7 @@ export function validateHello(message) {
   }
   return {
     extensionInstanceId: message.extensionInstanceId,
+    ...(message.pairingToken !== undefined ? { pairingToken: validatePairingToken(message.pairingToken) } : {}),
     sessions: validateSessions(message.sessions),
   }
 }
@@ -127,7 +152,7 @@ function validateSessions(sessions) {
       typeof session.providerId !== 'string' ||
       !session.providerId ||
       !(session.conversationId === null || typeof session.conversationId === 'string') ||
-      !['CLI', 'CROSS'].includes(session.transportMode ?? 'CLI') ||
+      !['CLI', 'CROSS', 'XPOSE'].includes(session.transportMode ?? 'CLI') ||
       !['ENDPOINT', 'MASTER', 'SLAVE'].includes(session.role ?? 'ENDPOINT') ||
       ids.has(session.browserSessionId)
     ) {
@@ -140,7 +165,7 @@ function validateSessions(sessions) {
       origin: session.origin,
       providerId: session.providerId,
       conversationId: session.conversationId ?? null,
-      transportMode: session.transportMode === 'CROSS' ? 'CROSS' : 'CLI',
+      transportMode: session.transportMode === 'CROSS' ? 'CROSS' : session.transportMode === 'XPOSE' ? 'XPOSE' : 'CLI',
       role: session.transportMode === 'CROSS' && session.role === 'SLAVE' ? 'SLAVE' : session.transportMode === 'CROSS' ? 'MASTER' : 'ENDPOINT',
     }
   })
@@ -148,6 +173,13 @@ function validateSessions(sessions) {
 
 function validIdentifier(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= 128
+}
+
+function validatePairingToken(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(value)) {
+    throw coded('invalid_hello', 'Extension pairing token is invalid')
+  }
+  return value
 }
 
 function isObject(value) {

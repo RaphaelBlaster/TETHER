@@ -130,6 +130,31 @@ test('responds to a versioned heartbeat', async () => {
   assert.deepEqual(JSON.parse(socket.sent[1]), { protocol: 'tether-extension', version: 1, type: 'pong', requestId: 'ping-1' })
 })
 
+test('publishes the authenticated XposE endpoint announced by the companion', async () => {
+  const socket = new FakeSocket()
+  const updates = []
+  const manager = managerWithSocket(socket, {
+    onStateChange: (state, serverInfo) => updates.push({ state, serverInfo }),
+  })
+  manager.connect(); socket.emit('open'); await tick()
+  socket.emit('message', { data: JSON.stringify({
+    protocol: 'tether-extension',
+    version: 1,
+    type: 'xpose_ready',
+    baseUrl: 'http://127.0.0.1:8766/v1',
+    model: 'tether-browser',
+  }) })
+  assert.deepEqual(manager.getServerInfo(), {
+    mode: 'XPOSE',
+    baseUrl: 'http://127.0.0.1:8766/v1',
+    model: 'tether-browser',
+  })
+  assert.deepEqual(updates.at(-1), {
+    state: CONNECTION_STATE.CONNECTED,
+    serverInfo: manager.getServerInfo(),
+  })
+})
+
 test('returns correlated extracted browser text and cancels it on disconnect', async () => {
   const socket = new FakeSocket()
   let receivedSignal

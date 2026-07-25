@@ -153,7 +153,7 @@ if (globalThis.__tetherCalibrationVersion !== CONTENT_SCRIPT_VERSION) {
         const title = context.title || 'Current browser tab'
         siteTitle.textContent = title
         siteHost.textContent = context.host || location.hostname
-        siteMode.textContent = context.mode === 'CROSS' ? 'CROSS' : 'CLI'
+        siteMode.textContent = context.mode === 'CROSS' ? 'CROSS' : context.mode === 'XPOSE' ? 'XPOSE' : 'CLI'
         siteFallback.textContent = title.trim().slice(0, 1).toUpperCase() || 'T'
         if (context.faviconUrl) {
           siteImage.hidden = false

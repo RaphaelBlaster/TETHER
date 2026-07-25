@@ -36,13 +36,14 @@ export function createConnectionManager({
   let reconnectTimer = null
   let retryAttempt = 0
   let state = CONNECTION_STATE.RETRYING
+  let serverInfo = null
   let currentRegistration = null
   const pending = new Map()
   const settled = new Map()
 
   function publish(nextState) {
     state = nextState
-    onStateChange(nextState)
+    onStateChange(nextState, serverInfo)
   }
 
   function clearReconnectTimer() {
@@ -66,7 +67,12 @@ export function createConnectionManager({
     const registration = await getRegistration()
     if (socket !== targetSocket) return false
     currentRegistration = registration
-    targetSocket.send(JSON.stringify(registrationMessage(type, registration.extensionInstanceId, registration.sessions)))
+    targetSocket.send(JSON.stringify(registrationMessage(
+      type,
+      registration.extensionInstanceId,
+      registration.sessions,
+      registration.pairingToken,
+    )))
     return true
   }
 
@@ -125,6 +131,7 @@ export function createConnectionManager({
     socket = null
     previousSocket?.close()
     currentRegistration = null
+    serverInfo = null
     abortPending()
     const nextSocket = createSocket(url)
     socket = nextSocket
@@ -143,7 +150,10 @@ export function createConnectionManager({
       if (socket !== nextSocket) return
       try {
         const message = parseAdapterMessage(event.data)
-        if (message.type === 'ping') sendIfCurrent(nextSocket, pongMessage(message.requestId))
+        if (message.type === 'xpose_ready') {
+          serverInfo = { mode: 'XPOSE', baseUrl: message.baseUrl, model: message.model }
+          publish(state)
+        } else if (message.type === 'ping') sendIfCurrent(nextSocket, pongMessage(message.requestId))
         else handleRequest(nextSocket, message)
       } catch {
         nextSocket.close(1002, 'Invalid TETHER extension message')
@@ -154,6 +164,7 @@ export function createConnectionManager({
       if (socket !== nextSocket) return
       socket = null
       currentRegistration = null
+      serverInfo = null
       abortPending()
       scheduleReconnect()
     })
@@ -174,6 +185,7 @@ export function createConnectionManager({
     const activeSocket = socket
     socket = null
     currentRegistration = null
+    serverInfo = null
     abortPending()
     activeSocket?.close()
   }
@@ -181,6 +193,7 @@ export function createConnectionManager({
   return {
     connect,
     getState: () => state,
+    getServerInfo: () => serverInfo,
     sessionsChanged,
     stop,
   }

@@ -30,7 +30,7 @@ It is designed for a simple idea: **keep the conversation in the browser, but le
 | **Interaction guard** | A translucent, themed overlay blocks accidental page input while TETHER is active and releases it on deactivation. |
 | **Local bridge** | The adapter listens on `127.0.0.1:8766`; no separate adapter installation or manual startup is required. |
 | **Provider aware** | ChatGPT, Gemini, and Claude have built-in recognition. Other HTTPS chat surfaces can be calibrated. |
-| **CLI and CROSS modes** | Use one browser endpoint for Codex or pair two provider tabs in a master/slave relay. |
+| **CLI, CROSS, and XposE** | Use one browser endpoint for Codex, pair two provider tabs, or expose one conversation through an authenticated localhost API. |
 
 ## Quick start
 
@@ -141,6 +141,26 @@ CROSS mode binds two tabs:
 - **SLAVE** receives the master response and produces the final relayed answer.
 
 Assign one role to each active endpoint. Duplicate roles are rejected, and both tabs remain independently identified.
+
+### XposE mode
+
+XposE starts an authenticated OpenAI-compatible server without launching
+Codex. Stop any existing plain `tether` process and run:
+
+```powershell
+tether xpose
+```
+
+Then select **XposE** under Transport and activate exactly one endpoint in the
+side panel.
+
+The active side panel then shows a copyable base URL and model ID in the XposE
+endpoint card; the persistent local API key remains in the terminal and is
+reused across restarts. Use those
+values in OpenCode or another client that supports a custom OpenAI-compatible provider. Models,
+Responses, Chat Completions, function tools, streaming, and disconnect
+cancellation are supported. See [the XposE guide](docs/xpose.md) for the exact
+API and security contract.
 
 ### Theme and interaction guard
 

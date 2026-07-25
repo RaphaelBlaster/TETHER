@@ -67,6 +67,37 @@ test('tool-result continuation preserves the complete output item and does not c
   assert.deepEqual(projected.turn.input, [output])
 })
 
+test('new user input is not hidden by a previously delivered tool result', () => {
+  const initial = request({
+    input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'read the file' }] }],
+  })
+  const initialState = compactProjectionState(initial, { connectionId: 'conn-1' })
+  const output = { type: 'function_call_output', call_id: 'call-1', output: 'file contents' }
+  const continuation = request({
+    previous_response_id: 'resp-1',
+    input: [...initial.input, output],
+  })
+  const continuationState = compactProjectionState(continuation, {
+    conversation: initialState,
+    connectionId: 'conn-1',
+  })
+  const followup = {
+    type: 'message',
+    role: 'user',
+    content: [{ type: 'input_text', text: 'what is today’s date?' }],
+  }
+  const projected = projectCompactRequest({
+    requestId: 'req-after-tool',
+    request: request({
+      previous_response_id: 'resp-2',
+      input: [...continuation.input, followup],
+    }),
+    conversation: continuationState,
+    connectionId: 'conn-1',
+  })
+  assert.deepEqual(projected.turn.input, [followup])
+})
+
 test('failed tool output is preserved verbatim for the next browser-model turn', () => {
   const failedOutput = {
     type: 'function_call_output',

@@ -6,7 +6,18 @@ import {
   validateSessionsChanged,
 } from './extension-session-registry.js'
 
-export function createExtensionConnectionHandler({ registry, testRequests, browserTurns, connectionId, heartbeatMs = 20000, scheduleInterval = setInterval, cancelInterval = clearInterval }) {
+export function createExtensionConnectionHandler({
+  registry,
+  testRequests,
+  browserTurns,
+  connectionId,
+  authenticate = null,
+  connectionOrigin = null,
+  xposeInfo = null,
+  heartbeatMs = 20000,
+  scheduleInterval = setInterval,
+  cancelInterval = clearInterval,
+}) {
   let extensionInstanceId = null
   let peer = null
   let heartbeat = null
@@ -19,8 +30,18 @@ export function createExtensionConnectionHandler({ registry, testRequests, brows
     const message = parseExtensionMessage(text)
     if (!extensionInstanceId) {
       const hello = validateHello(message)
+      await authenticate?.({ ...hello, origin: connectionOrigin })
       extensionInstanceId = hello.extensionInstanceId
       registry.register({ ...hello, peer: client, connectionId })
+      if (xposeInfo) {
+        client.sendJson({
+          protocol: EXTENSION_PROTOCOL,
+          version: EXTENSION_PROTOCOL_VERSION,
+          type: 'xpose_ready',
+          baseUrl: xposeInfo.baseUrl,
+          model: xposeInfo.model,
+        })
+      }
       heartbeat = scheduleInterval(() => {
         client.sendJson({
           protocol: EXTENSION_PROTOCOL,

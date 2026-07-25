@@ -15,7 +15,7 @@ import { createInjectionCoordinator } from './injection/injection-coordinator.js
 import { createExtractionCoordinator } from './extraction/extraction-coordinator.js'
 import { createBrowserAutomation } from './automation/browser-automation.js'
 import { createDebuggerTransport } from './automation/debugger-transport.js'
-import { getOrCreateExtensionInstanceId } from './extension-protocol.js'
+import { getOrCreateExtensionInstanceId, getOrCreateExtensionPairingToken } from './extension-protocol.js'
 import { shouldCancelTabOperations, shouldReleaseBrowserAutomation } from './navigation-policy.js'
 import { ensureTetherContentScript } from './content-script-lifecycle.js'
 import { createSerialTaskQueue } from './serial-task-queue.js'
@@ -37,7 +37,9 @@ const TETHER_THEME_KEY = 'tetherTheme'
 let transportMode = 'CLI'
 let tetherTheme = 'dark'
 const modeReady = chrome.storage.session.get(TRANSPORT_MODE_KEY).then((stored) => {
-  transportMode = stored[TRANSPORT_MODE_KEY] === 'CROSS' ? 'CROSS' : 'CLI'
+  transportMode = ['CLI', 'CROSS', 'XPOSE'].includes(stored[TRANSPORT_MODE_KEY])
+    ? stored[TRANSPORT_MODE_KEY]
+    : 'CLI'
 })
 const themeReady = chrome.storage.local.get(TETHER_THEME_KEY).then((stored) => {
   tetherTheme = stored[TETHER_THEME_KEY] === 'light' ? 'light' : 'dark'
@@ -135,6 +137,7 @@ chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).catch(c
 
 const sessionReady = browserSessions.initialize()
 const extensionInstanceReady = getOrCreateExtensionInstanceId(chrome.storage.local)
+const extensionPairingReady = getOrCreateExtensionPairingToken(chrome.storage.local)
 const calibrationReady = calibration.restore()
 const responseCalibrationReady = responseCalibration.restore()
 const panelReady = sessionReady.then(async (sessions) => {
@@ -165,8 +168,12 @@ const browserAutomation = createBrowserAutomation({
 })
 
 async function extensionRegistration() {
-  const [extensionInstanceId] = await Promise.all([extensionInstanceReady, sessionReady])
-  return { extensionInstanceId, sessions: browserSessions.list() }
+  const [extensionInstanceId, pairingToken] = await Promise.all([
+    extensionInstanceReady,
+    extensionPairingReady,
+    sessionReady,
+  ])
+  return { extensionInstanceId, pairingToken, sessions: browserSessions.list() }
 }
 
 async function validateAdapterTestRequest(message, registration) {
@@ -237,8 +244,8 @@ const manager = createConnectionManager({
   getRegistration: extensionRegistration,
   onTestRequest: validateAdapterTestRequest,
   onBrowserRequest: handleAdapterBrowserRequest,
-  onStateChange(state) {
-    broadcast({ type: 'connection.stateChanged', state })
+  onStateChange(state, serverInfo) {
+    broadcast({ type: 'connection.stateChanged', state, serverInfo })
   },
 })
 
@@ -332,7 +339,9 @@ async function panelState(sender) {
   const session = browserSessions.getByTabId(tab?.id)
   const crossSessions = browserSessions.list().filter((candidate) => candidate.transportMode === 'CROSS')
   const endpoints = {
-    count: transportMode === 'CROSS' ? crossSessions.length : browserSessions.list().filter((candidate) => candidate.transportMode === 'CLI').length,
+    count: transportMode === 'CROSS'
+      ? crossSessions.length
+      : browserSessions.list().filter((candidate) => candidate.transportMode === transportMode).length,
     masterReady: crossSessions.some((candidate) => candidate.role === 'MASTER'),
     slaveReady: crossSessions.some((candidate) => candidate.role === 'SLAVE'),
   }
@@ -452,7 +461,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'mode.set') {
     modeReady.then(() => endpointMutations.run(async () => {
-      if (!['CLI', 'CROSS'].includes(message.mode)) throw Object.assign(new Error('Unsupported TETHER mode'), { code: 'invalid_mode' })
+      if (!['CLI', 'CROSS', 'XPOSE'].includes(message.mode)) throw Object.assign(new Error('Unsupported TETHER mode'), { code: 'invalid_mode' })
       const nextMode = message.mode
       if (nextMode !== transportMode && browserSessions.list().length > 0) {
         throw Object.assign(new Error('Deactivate the current endpoints before switching TETHER modes'), { code: 'active_endpoints' })
@@ -467,7 +476,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true
   }
   if (message?.type === 'connection.getState') {
-    sendResponse({ state: manager.getState() })
+    sendResponse({ state: manager.getState(), serverInfo: manager.getServerInfo() })
     return undefined
   }
 
@@ -513,8 +522,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             code: 'calibration_required',
           })
         }
-        if (transportMode === 'CLI' && !browserSessions.getByTabId(tab.id) && browserSessions.list().length > 0) {
-          throw Object.assign(new Error('CLI already has an active endpoint; deactivate it before selecting another tab'), { code: 'cli_endpoint_exists' })
+        if (transportMode !== 'CROSS' && !browserSessions.getByTabId(tab.id) && browserSessions.list().length > 0) {
+          const code = transportMode === 'CLI' ? 'cli_endpoint_exists' : 'xpose_endpoint_exists'
+          throw Object.assign(new Error(`${transportMode === 'CLI' ? 'CLI' : 'XposE'} already has an active endpoint; deactivate it before selecting another tab`), { code })
         }
         const requestedRole = message.role
         if (transportMode === 'CROSS' && !['MASTER', 'SLAVE'].includes(requestedRole)) {

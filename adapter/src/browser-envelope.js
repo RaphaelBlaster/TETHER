@@ -94,12 +94,20 @@ export function parseBrowserResponse(text, requestId, offeredTools = []) {
     protocolText.endsWith('}') &&
     /"type"\s*:\s*"tool_call"/.test(protocolText) &&
     new RegExp(`"requestId"\\s*:\\s*${escapeRegExp(JSON.stringify(requestId))}`).test(protocolText)
+  const standaloneCorrelatedAssistantText =
+    protocolText.startsWith('{') &&
+    protocolText.endsWith('}') &&
+    /"type"\s*:\s*"assistant_text"/.test(protocolText) &&
+    new RegExp(`"requestId"\\s*:\\s*${escapeRegExp(JSON.stringify(requestId))}`).test(protocolText)
+  const repairedProtocolText = standaloneCorrelatedAssistantText
+    ? repairQuotedAssistantText(protocolText) ?? protocolText
+    : protocolText
   // Some providers render a small speaker prefix (for example, "Gemini said")
   // before an otherwise valid protocol object.  Accept only a uniquely
   // correlated object; never parse an arbitrary JSON fragment as a tool call.
   // A standalone tool call with the exact current requestId is equally
   // unambiguous, so repair raw Windows path separators there as well.
-  const embedded = parseJsonObjects(protocolText, {
+  const embedded = parseJsonObjects(repairedProtocolText, {
     repairToolCallBackslashes: hasSpeakerPrefix || standaloneCorrelatedToolCall,
   }).map(inferEnvelopeType)
   const matching = embedded.filter((value) => isObject(value) && value.requestId === requestId &&
@@ -117,7 +125,7 @@ export function parseBrowserResponse(text, requestId, offeredTools = []) {
     return parseBrowserEnvelope(JSON.stringify({ ...uncorrelated[0], requestId }), requestId, offeredTools)
   }
   if (protocolText.startsWith('{') || protocolText.startsWith('[')) {
-    return parseBrowserEnvelope(protocolText, requestId, offeredTools)
+    return parseBrowserEnvelope(repairedProtocolText, requestId, offeredTools)
   }
   return { schemaVersion: 1, type: 'assistant_text', requestId, content: normalized }
 }
@@ -195,6 +203,49 @@ function repairQuotedShellCommand(value) {
   const command = value.slice(openingQuote + 1, closingQuote)
   if (!command.includes('"')) return null
   return `${value.slice(0, openingQuote)}${JSON.stringify(command)}${value.slice(closingQuote + 1)}`
+}
+
+// A provider can quote a tool result inside assistant_text.content without
+// escaping the nested quotes, even after a protocol repair turn. Repair only a
+// standalone, exactly correlated assistant_text object whose content is the
+// final field. The ordinary envelope validator still enforces the complete
+// schema after parsing.
+function repairQuotedAssistantText(value) {
+  try {
+    JSON.parse(value)
+    return null
+  } catch {}
+  const contentStart = /"content"\s*:\s*"/.exec(value)
+  if (!contentStart) return null
+  const openingQuote = contentStart.index + contentStart[0].length - 1
+  const remainder = value.slice(openingQuote + 1)
+  const contentEnd = /"\s*}\s*$/.exec(remainder)
+  if (!contentEnd) return null
+  const closingQuote = openingQuote + 1 + contentEnd.index
+  const content = value.slice(openingQuote + 1, closingQuote)
+  if (!content.includes('"')) return null
+  return `${value.slice(0, openingQuote + 1)}${escapeJsonStringContent(content)}${value.slice(closingQuote)}`
+}
+
+function escapeJsonStringContent(value) {
+  let result = ''
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]
+    if (character === '"') {
+      result += '\\"'
+      continue
+    }
+    if (character === '\\') {
+      const next = value[index + 1]
+      const validUnicodeEscape = next === 'u' && /^[0-9a-fA-F]{4}$/.test(value.slice(index + 2, index + 6))
+      if (!validUnicodeEscape && !['"', '\\', '/', 'b', 'f', 'n', 'r', 't'].includes(next)) result += '\\'
+      result += character
+      continue
+    }
+    const encoded = JSON.stringify(character)
+    result += encoded.slice(1, -1)
+  }
+  return result
 }
 
 // Consumer model UIs sometimes render a Windows command with single path

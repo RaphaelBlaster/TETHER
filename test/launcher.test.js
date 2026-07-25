@@ -20,6 +20,11 @@ test('probeAdapter accepts only the TETHER health contract', async () => {
     status: 200,
     json: async () => ({ status: 'ok', service: 'something-else' }),
   }) })
+  const xpose = await probeAdapter({ fetchImpl: async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ status: 'ok', service: 'tether-adapter', mode: 'xpose' }),
+  }) })
   const legacy = await probeAdapter({ fetchImpl: async () => ({
     ok: false,
     status: 404,
@@ -28,6 +33,7 @@ test('probeAdapter accepts only the TETHER health contract', async () => {
   assert.equal(healthy, true)
   assert.equal(legacy, true)
   assert.equal(unrelated, false)
+  assert.equal(xpose, false)
 })
 
 test('waitForAdapter resolves after the embedded service is ready', async () => {

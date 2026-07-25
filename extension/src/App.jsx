@@ -30,19 +30,26 @@ const DEMO_PANEL_STATE = {
 }
 
 function useConnectionState() {
-  const [state, setState] = React.useState(() => globalThis.chrome?.runtime ? 'unavailable' : 'connected')
+  const [connection, setConnection] = React.useState(() => globalThis.chrome?.runtime
+    ? { state: 'unavailable', serverInfo: null }
+    : { state: 'connected', serverInfo: { mode: 'XPOSE', baseUrl: 'http://127.0.0.1:8766/v1', model: 'tether-browser' } })
   React.useEffect(() => {
     if (!globalThis.chrome?.runtime) return undefined
     const listener = (message) => {
-      if (message?.type === 'connection.stateChanged') setState(message.state)
+      if (message?.type === 'connection.stateChanged') {
+        setConnection({ state: message.state, serverInfo: message.serverInfo ?? null })
+      }
     }
     chrome.runtime.onMessage.addListener(listener)
     chrome.runtime.sendMessage({ type: 'connection.getState' })
-      .then((response) => setState(response?.state ?? 'unavailable'))
-      .catch(() => setState('unavailable'))
+      .then((response) => setConnection({
+        state: response?.state ?? 'unavailable',
+        serverInfo: response?.serverInfo ?? null,
+      }))
+      .catch(() => setConnection({ state: 'unavailable', serverInfo: null }))
     return () => chrome.runtime.onMessage.removeListener(listener)
   }, [])
-  return state
+  return connection
 }
 
 function usePanelState() {
@@ -79,7 +86,8 @@ function usePanelState() {
 }
 
 function App() {
-  const connectionState = useConnectionState()
+  const connection = useConnectionState()
+  const connectionState = connection.state
   const [panelState, setPanelState, refreshPanelState, resetPanelForTab] = usePanelState()
   const [startPending, setStartPending] = React.useState(false)
   const startPendingRef = React.useRef(false)
@@ -869,6 +877,7 @@ function App() {
     <TetherProductUI
       state={panelState}
       connectionState={connectionState}
+      serverInfo={connection.serverInfo}
       mode={mode}
       role={crossRole}
       actionBusy={Boolean(activationAction)}

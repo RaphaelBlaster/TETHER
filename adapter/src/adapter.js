@@ -7,6 +7,7 @@ import { createTestRequestController } from './extension-test-controller.js'
 import { createExtensionConnectionHandler, extensionError } from './extension-connection.js'
 import { createBrowserTurnController } from './browser-turn-controller.js'
 import { createConversationStateStore } from './conversation-state-store.js'
+import { createXposeApi, XPOSE_MODEL_ID } from './xpose-api.js'
 
 export const HARDCODED_TEXT = 'TETHER hardcoded Responses WebSocket round trip succeeded.'
 
@@ -23,6 +24,7 @@ export function createTetherAdapter({
   conversationStatePath,
   routeResponsesToBrowser = false,
   browserController = null,
+  xpose = null,
   logger = console,
 } = {}) {
   let responseSequence = 0
@@ -32,12 +34,25 @@ export function createTetherAdapter({
   const testRequests = createTestRequestController({ registry: extensionSessions, timeoutMs: testRequestTimeoutMs })
   const conversationState = createConversationStateStore({ path: conversationStatePath })
   const browserTurns = createBrowserTurnController({ registry: extensionSessions, stateStore: conversationState, timeoutMs: browserTurnTimeoutMs })
+  const xposeApi = xpose ? createXposeApi({
+    apiToken: xpose.apiToken,
+    executeResponses: (message, options) => handleResponseRequest(message, options.emit, options),
+    listSessions: () => extensionSessions.list(),
+    modelId: xpose.modelId,
+    maxBodyBytes: xpose.maxBodyBytes,
+    maxConcurrentTurns: xpose.maxConcurrentTurns,
+  }) : null
 
   const server = createServer(async (request, response) => {
     if (request.method === 'GET' && request.url === '/tether/health') {
-      sendHttpJson(response, 200, { status: 'ok', service: 'tether-adapter' })
+      sendHttpJson(response, 200, {
+        status: 'ok',
+        service: 'tether-adapter',
+        ...(xposeApi ? { mode: 'xpose' } : {}),
+      })
       return
     }
+    if (xposeApi && await xposeApi.handle(request, response)) return
     if (request.method === 'POST' && request.url === '/v1/responses') {
       try {
         const message = await readHttpJson(request)
@@ -83,7 +98,18 @@ export function createTetherAdapter({
   server.on('upgrade', (request, socket, head) => {
     const connectionId = `conn-${++connectionSequence}`
     if (request.url === '/tether/extension') {
-      const handler = createExtensionConnectionHandler({ registry: extensionSessions, testRequests, browserTurns, connectionId })
+      const handler = createExtensionConnectionHandler({
+        registry: extensionSessions,
+        testRequests,
+        browserTurns,
+        connectionId,
+        authenticate: xpose?.authenticateExtension,
+        connectionOrigin: request.headers.origin,
+        xposeInfo: xposeApi ? {
+          baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+          model: xpose.modelId ?? XPOSE_MODEL_ID,
+        } : null,
+      })
       const peer = acceptWebSocket(request, socket, head, {
         path: '/tether/extension',
         maxMessageBytes: extensionMaxMessageBytes,
@@ -108,7 +134,7 @@ export function createTetherAdapter({
       return
     }
 
-    if (request.url !== '/v1/responses') {
+    if (request.url !== '/v1/responses' || xposeApi) {
       socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
       return
     }
@@ -160,6 +186,7 @@ export function createTetherAdapter({
         websocketUrl: `ws://${host}:${address.port}/v1/responses`,
         extensionWebsocketUrl: `ws://${host}:${address.port}/tether/extension`,
         developmentTestUrl: `http://${host}:${address.port}/tether/dev/test`,
+        ...(xposeApi ? { baseUrl: `http://${host}:${address.port}/v1` } : {}),
       }
       if (serverInfoPath) {
         await mkdir(dirname(serverInfoPath), { recursive: true })
@@ -177,7 +204,7 @@ export function createTetherAdapter({
     listExtensionRegistrations: () => extensionSessions.list(),
   }
 
-  async function handleResponseRequest(message, emit, { connectionId = 'http', ping = null } = {}) {
+  async function handleResponseRequest(message, emit, { connectionId = 'http', ping = null, signal = null } = {}) {
     const responseId = `resp_tether_${++responseSequence}`
     emit({ type: 'response.created', response: { id: responseId } })
     let keepalive = null
@@ -192,8 +219,9 @@ export function createTetherAdapter({
         emit(completedEvent(responseId))
         return
       }
+      if (signal?.aborted) throw coded('request_cancelled', 'Request was cancelled')
       const browserEnvelope = routeResponsesToBrowser
-        ? await routeBrowserResponse(message, { connectionId })
+        ? await routeBrowserResponse(message, { connectionId, signal })
         : { type: 'assistant_text', content: hardcodedText }
       if (browserEnvelope.type === 'tool_call') {
         emit({
@@ -224,21 +252,25 @@ export function createTetherAdapter({
     }
   }
 
-  async function routeBrowserResponse(message, { connectionId }) {
+  async function routeBrowserResponse(message, { connectionId, signal = null }) {
     if (browserController) return browserController.request(message, { connectionId })
-    const route = extensionSessions.selectRoute()
+    const route = connectionId.startsWith('xpose:')
+      ? { mode: 'CLI', endpoint: extensionSessions.selectXposeEndpoint() }
+      : extensionSessions.selectRoute()
     if (route.mode === 'CLI') {
-      return browserTurns.request(message, { connectionId, selection: route.endpoint })
+      return browserTurns.request(message, { connectionId, selection: route.endpoint, signal })
     }
     const masterEnvelope = await browserTurns.request(message, {
       connectionId: `${connectionId}:master`,
       selection: route.master,
+      signal,
     })
     if (masterEnvelope.type !== 'assistant_text') return masterEnvelope
     const relayRequest = crossRelayRequest(message, masterEnvelope.content)
     return browserTurns.request(relayRequest, {
       connectionId: `${connectionId}:slave`,
       selection: route.slave,
+      signal,
     })
   }
 }

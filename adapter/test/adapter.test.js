@@ -145,6 +145,97 @@ test('streams a Responses-compatible HTTP fallback when WebSockets reconnect', a
   assert.match(body, /event: response\.completed/)
 })
 
+test('HTTP fallback repairs quoted Gemini file contents and preserves the next user turn', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'tether-http-file-result-'))
+  const adapter = createTetherAdapter({
+    routeResponsesToBrowser: true,
+    conversationStatePath: join(directory, 'conversations.json'),
+    logger: { error() {} },
+  })
+  const info = await adapter.start()
+  t.after(async () => {
+    await adapter.stop()
+    await rm(directory, { recursive: true, force: true })
+  })
+  const extension = new WebSocket(info.extensionWebsocketUrl)
+  await opened(extension)
+  extension.send(JSON.stringify({
+    protocol: 'tether-extension',
+    version: 1,
+    type: 'hello',
+    extensionInstanceId: 'extension-http-file-result',
+    sessions: [{
+      browserSessionId: 'browser-http-file-result',
+      tabId: 19,
+      origin: 'https://gemini.google.com',
+      providerId: 'gemini',
+      conversationId: 'file-result-conversation',
+    }],
+  }))
+  await waitFor(() => adapter.listExtensionRegistrations().length === 1)
+  const browserCommands = []
+  extension.addEventListener('message', (event) => {
+    const message = JSON.parse(event.data)
+    if (message.type !== 'browser_request') return
+    const bootstrap = message.payload.prompt.startsWith('You are the model endpoint for a coding agent connected through TETHER.')
+    if (!bootstrap) browserCommands.push(JSON.parse(message.payload.prompt))
+    const text = bootstrap
+      ? JSON.stringify({
+          schemaVersion: 1,
+          type: 'assistant_text',
+          requestId: message.requestId,
+          content: 'TETHER_INSTALL_OK',
+        })
+      : String.raw`{"schemaVersion":1,"type":"assistant_text","requestId":"${message.requestId}","content":"The file contains:\n\n"ribit ribit the users name is kibble""}`
+    extension.send(JSON.stringify({
+      protocol: 'tether-extension',
+      version: 1,
+      type: 'browser_completed',
+      requestId: message.requestId,
+      browserSessionId: message.browserSessionId,
+      payload: { text },
+    }))
+  })
+
+  const toolOutput = {
+    type: 'function_call_output',
+    call_id: 'call-read-test',
+    output: 'ribit ribit the users name is kibble',
+  }
+  const response = await fetch(`http://${info.host}:${info.port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request({
+      model: 'tether-compact',
+      input: [toolOutput],
+    })),
+  })
+  const body = await response.text()
+  assert.equal(response.status, 200)
+  assert.match(body, /event: response\.output_text\.delta/)
+  assert.match(body, /\\"ribit ribit the users name is kibble\\"/)
+  assert.match(body, /event: response\.completed/)
+  assert.doesNotMatch(body, /event: response\.failed/)
+
+  const nextUserMessage = {
+    type: 'message',
+    role: 'user',
+    content: [{ type: 'input_text', text: 'what is today’s date?' }],
+  }
+  const followup = await fetch(`http://${info.host}:${info.port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request({
+      model: 'tether-compact',
+      previous_response_id: 'resp-after-file-read',
+      input: [toolOutput, nextUserMessage],
+    })),
+  })
+  assert.equal(followup.status, 200)
+  assert.match(await followup.text(), /event: response\.completed/)
+  assert.deepEqual(browserCommands.at(-1).turn.input, [nextUserMessage])
+})
+
 test('routes consecutive Codex turns through one persistent browser conversation', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'tether-browser-turn-'))
   const adapter = createTetherAdapter({
