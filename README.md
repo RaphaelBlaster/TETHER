@@ -6,12 +6,13 @@
   <img alt="Chrome Manifest V3" src="https://img.shields.io/badge/Chrome-Manifest_V3-171714?style=flat-square&logo=googlechrome&logoColor=F3EFE4&labelColor=171714&color=F05A2A">
   <img alt="Node.js 18 or newer" src="https://img.shields.io/badge/Node.js-18%2B-171714?style=flat-square&logo=nodedotjs&logoColor=F3EFE4&labelColor=171714&color=F05A2A">
   <img alt="React 19" src="https://img.shields.io/badge/React-19-171714?style=flat-square&logo=react&logoColor=F3EFE4&labelColor=171714&color=F05A2A">
-  <img alt="Tests passing" src="https://img.shields.io/badge/tests-194_passing-171714?style=flat-square&labelColor=171714&color=2F8F62">
+  <img alt="Tests passing" src="https://img.shields.io/badge/tests-246_passing-171714?style=flat-square&labelColor=171714&color=2F8F62">
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-it-works">How it works</a> ·
+  <a href="#xpose-mode">XposE</a> ·
   <a href="#using-tether">Using TETHER</a> ·
   <a href="#development">Development</a> ·
   <a href="#troubleshooting">Troubleshooting</a>
@@ -144,23 +145,77 @@ Assign one role to each active endpoint. Duplicate roles are rejected, and both 
 
 ### XposE mode
 
-XposE starts an authenticated OpenAI-compatible server without launching
-Codex. Stop any existing plain `tether` process and run:
+XposE turns exactly one activated browser conversation into an authenticated,
+OpenAI-compatible localhost API. It works with OpenCode and other clients that
+accept a custom OpenAI-compatible provider, and it does not launch Codex.
+
+Stop any existing plain `tether` process first because CLI and XposE share
+loopback port `8766`, then run:
 
 ```powershell
 tether xpose
 ```
 
-Then select **XposE** under Transport and activate exactly one endpoint in the
-side panel.
+Next:
 
-The active side panel then shows a copyable base URL and model ID in the XposE
-endpoint card; the persistent local API key remains in the terminal and is
-reused across restarts. Use those
-values in OpenCode or another client that supports a custom OpenAI-compatible provider. Models,
-Responses, Chat Completions, function tools, streaming, and disconnect
-cancellation are supported. See [the XposE guide](docs/xpose.md) for the exact
-API and security contract.
+1. Open TETHER beside the authenticated browser conversation you want to use.
+2. Select **XposE** under **Transport**.
+3. Choose **Activate as XposE endpoint**.
+4. Copy the base URL and model ID from the endpoint card.
+5. Copy the API key from the `tether xpose` terminal.
+
+The local API key is created once, stored at
+`~/.tether/state/xpose-api-token`, and reused across restarts. Configure each
+local client once; rotate the key only if it is exposed:
+
+```powershell
+tether xpose --rotate-key
+```
+
+#### Configure OpenCode
+
+Create a custom OpenAI-compatible provider with these values:
+
+| OpenCode field | Value |
+| --- | --- |
+| **Provider ID** | `tether` |
+| **Display name** | `TETHER` |
+| **Base URL** | `http://127.0.0.1:8766/v1` |
+| **API key** | The persistent token printed by `tether xpose` |
+| **Model ID** | `tether-browser` |
+| **Model name** | `TETHER Browser` |
+| **Headers** | Leave empty |
+
+After saving the provider, select **TETHER Browser** and send a normal prompt.
+The request travels from OpenCode to the local companion, through the paired
+extension, and into the one XposE-owned browser tab.
+
+#### Verify the endpoint directly
+
+```powershell
+$headers = @{ Authorization = "Bearer <TOKEN_FROM_TETHER_XPOSE>" }
+$body = @{
+  model = "tether-browser"
+  messages = @(@{ role = "user"; content = "Reply with: XposE is ready." })
+} | ConvertTo-Json -Depth 8
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:8766/v1/chat/completions" `
+  -Headers $headers `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+XposE supports `GET /v1/models`, `POST /v1/responses`, and
+`POST /v1/chat/completions`, including function tools and `stream: true`.
+Because browser pages expose stable completed answers rather than provider
+token deltas, streaming uses valid SSE framing after the browser answer
+stabilizes; it does not simulate token-by-token timing. Disconnecting the
+client cancels the correlated browser turn.
+
+See [the complete XposE guide](docs/xpose.md) for request shapes, lifecycle
+errors, streaming details, and the security contract.
 
 ### Theme and interaction guard
 
@@ -216,6 +271,8 @@ The current extension suite covers tab lifecycle, session identity, calibration,
 ## Security and privacy notes
 
 - The adapter binds to loopback at `127.0.0.1:8766`.
+- XposE also rejects non-loopback clients, requires its local bearer token,
+  restricts accepted `Host` values, and does not grant browser CORS access.
 - Host access is optional and requested per selected origin.
 - Extension-owned storage is restricted to trusted extension contexts.
 - The interaction guard blocks user input; it is not a security sandbox.

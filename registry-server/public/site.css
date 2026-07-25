@@ -702,6 +702,203 @@ a:focus-visible {
   line-height: 1.6;
 }
 
+.xpose-section {
+  background: var(--canvas-deep);
+}
+
+.xpose-section code {
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.xpose-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+}
+
+.xpose-console {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  color: #f3efe4;
+  background:
+    linear-gradient(rgba(243, 239, 228, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(243, 239, 228, 0.035) 1px, transparent 1px),
+    #171714;
+  background-size: 34px 34px;
+  box-shadow: inset 6px 0 0 var(--orange);
+}
+
+.xpose-console__bar,
+.xpose-console__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 22px;
+  border-bottom: 1px solid rgba(243, 239, 228, 0.18);
+  color: #aaa69b;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.xpose-console__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #65c491;
+}
+
+.xpose-console__status i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #65c491;
+  box-shadow: 0 0 0 5px rgba(101, 196, 145, 0.16);
+}
+
+.xpose-console pre {
+  min-height: 360px;
+  margin: 0;
+  overflow-x: auto;
+  padding: clamp(32px, 5vw, 70px) clamp(26px, 4vw, 58px);
+  font: 13px/2 ui-monospace, Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+.console-prompt {
+  color: var(--orange);
+  font-weight: 900;
+}
+
+.xpose-console__foot {
+  flex-wrap: wrap;
+  margin-top: auto;
+  border-top: 1px solid rgba(243, 239, 228, 0.18);
+  border-bottom: 0;
+}
+
+.xpose-console__foot span::before {
+  margin-right: 8px;
+  color: var(--orange);
+  content: '◆';
+  font-size: 6px;
+}
+
+.xpose-guide {
+  min-width: 0;
+  padding: clamp(30px, 4vw, 58px);
+}
+
+.xpose-steps {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+
+.xpose-steps li {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 16px;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.xpose-steps li > span {
+  padding-top: 3px;
+  color: var(--orange);
+  font: 11px ui-monospace, Consolas, monospace;
+}
+
+.xpose-steps h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.xpose-steps p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.xpose-config {
+  margin: 34px 0 0;
+  border: 1px solid var(--line-strong);
+}
+
+.xpose-config > div {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 18px;
+  padding: 13px 15px;
+}
+
+.xpose-config > div + div {
+  border-top: 1px solid var(--line);
+}
+
+.xpose-config dt,
+.xpose-config dd {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.xpose-config dt {
+  color: var(--muted);
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.xpose-config dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+
+.xpose-guide .text-link {
+  color: var(--orange);
+}
+
+.xpose-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  border-right: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+  border-left: 1px solid var(--line-strong);
+}
+
+.xpose-capabilities span {
+  flex: 1 1 190px;
+  padding: 15px 18px;
+  border-right: 1px solid var(--line);
+  color: var(--muted);
+  font: 9px/1.4 ui-monospace, Consolas, monospace;
+  letter-spacing: 0.06em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.xpose-streaming-note {
+  max-width: 920px;
+  margin: 26px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.xpose-streaming-note strong {
+  color: var(--ink);
+}
+
 .architecture-section {
   color: #f3efe4;
   background: #171714;
@@ -1021,6 +1218,10 @@ footer > div:nth-of-type(2) a {
     grid-template-columns: 1fr;
   }
 
+  .xpose-grid {
+    grid-template-columns: 1fr;
+  }
+
   .lane-flow {
     grid-template-columns: 1fr;
   }
@@ -1094,6 +1295,27 @@ footer > div:nth-of-type(2) a {
     min-height: 40px;
     border-top: 1px solid rgba(23, 23, 20, 0.22);
     border-left: 0;
+  }
+
+  .xpose-console pre {
+    min-height: 300px;
+    padding: 34px 24px;
+    font-size: 11px;
+  }
+
+  .xpose-console__bar,
+  .xpose-console__foot {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .xpose-guide {
+    padding: 30px 22px;
+  }
+
+  .xpose-config > div {
+    grid-template-columns: 1fr;
+    gap: 5px;
   }
 
   .principles {
