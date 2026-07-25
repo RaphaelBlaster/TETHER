@@ -31,7 +31,7 @@ import {
 } from './provider-adapter-registry.js'
 import { createSelectorRequestClient } from './selector-request-client.js'
 
-const PROVIDER_ADAPTER_REGISTRY_URL = 'https://tether-provider-registry.onrender.com'
+const PROVIDER_ADAPTER_REGISTRY_URL = 'https://tether-provider-registry-w0cq.onrender.com'
 const TRANSPORT_MODE_KEY = 'tetherTransportMode'
 const TETHER_THEME_KEY = 'tetherTheme'
 let transportMode = 'CLI'

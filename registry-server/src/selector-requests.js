@@ -95,7 +95,7 @@ export function createSelectorRequestReport(records, {
 } = {}) {
   const pending = records.filter((record) => record.status === 'pending')
   const lines = [
-    '<p align="center"><img src="https://tether-provider-registry.onrender.com/tether-logo.svg" width="72" alt="TETHER"></p>',
+    '<p align="center"><img src="https://tether-provider-registry-w0cq.onrender.com/tether-logo.svg" width="72" alt="TETHER"></p>',
     '',
     '# TETHER selector maintenance report',
     '',

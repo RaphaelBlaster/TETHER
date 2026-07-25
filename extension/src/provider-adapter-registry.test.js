@@ -167,7 +167,7 @@ test('registry timeout is bounded and the drift report contains metadata only', 
 test('HTTP registry client targets the production API with conditional JSON requests', async () => {
   const requests = []
   const endpointForOrigin = createProviderAdapterEndpointResolver(
-    'https://tether-provider-registry.onrender.com',
+    'https://tether-provider-registry-w0cq.onrender.com',
   )
   const client = createHttpProviderAdapterClient({
     endpointForOrigin,
@@ -184,7 +184,7 @@ test('HTTP registry client targets the production API with conditional JSON requ
   }), { notModified: true })
   assert.equal(
     requests[0].url,
-    `https://tether-provider-registry.onrender.com/v1/adapters?origin=${encodeURIComponent(ORIGIN)}`,
+    `https://tether-provider-registry-w0cq.onrender.com/v1/adapters?origin=${encodeURIComponent(ORIGIN)}`,
   )
   assert.equal(requests[0].options.headers.Accept, 'application/json')
   assert.equal(requests[0].options.headers['If-None-Match'], '"manifest-etag"')

@@ -14,7 +14,7 @@ test('selector request client canonicalizes one idempotent request and reuses pe
   const calls = []
   const requestId = await selectorRequestId(ORIGIN)
   const client = createSelectorRequestClient({
-    baseUrl: 'https://tether-provider-registry.onrender.com',
+    baseUrl: 'https://tether-provider-registry-w0cq.onrender.com',
     storage,
     extensionVersion: '0.1.0',
     fetchImpl: async (url, options) => {
