@@ -697,7 +697,7 @@ function pageShell(title, body) {
     <meta name="theme-color" content="#171714">
     <title>${escapeHtml(title)}</title>
     <link rel="icon" href="/tether-logo.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/site.css?v=20260724-2">
+    <link rel="stylesheet" href="/site.css?v=20260725-1">
   </head>
   <body>${body}</body>
 </html>`

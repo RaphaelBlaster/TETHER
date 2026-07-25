@@ -7,8 +7,8 @@
     <meta name="theme-color" content="#171714">
     <title>TETHER — Keep the thread.</title>
     <link rel="icon" href="/tether-logo.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/site.css?v=20260724-2">
-    <script src="/site.js?v=20260724-2" defer></script>
+    <link rel="stylesheet" href="/site.css?v=20260725-1">
+    <script src="/site.js?v=20260725-1" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
@@ -21,6 +21,7 @@
       <nav aria-label="Primary navigation">
         <a href="#modes">Modes</a>
         <a href="#install">Install</a>
+        <a href="#xpose">XposE</a>
         <a href="#architecture">Architecture</a>
       </nav>
       <div class="header-actions">
@@ -123,15 +124,15 @@
 
           <article class="mode-card mode-card--dark">
             <div class="mode-card__number">03</div>
-            <div class="mode-card__badge">Next</div>
+            <div class="mode-card__badge">Available now</div>
             <h3>XPOSE</h3>
             <p>Expose the selected tab as an OpenAI-compatible localhost endpoint for any harness that supports a custom provider.</p>
             <ul>
-              <li>Harness-agnostic URL</li>
-              <li>Local machine only</li>
-              <li>No cloud prompt relay</li>
+              <li>Responses + Chat Completions</li>
+              <li>Function tools + valid SSE</li>
+              <li>Persistent local API key</li>
             </ul>
-            <span class="mode-card__note">Planned local gateway</span>
+            <a href="#xpose">Configure XposE <span aria-hidden="true">→</span></a>
           </article>
         </div>
       </section>
@@ -178,6 +179,81 @@
             </div>
           </li>
         </ol>
+      </section>
+
+      <section class="section xpose-section" id="xpose" aria-labelledby="xpose-title">
+        <div class="section-heading">
+          <p class="eyebrow"><span class="live-dot"></span> OpenAI-compatible · available now</p>
+          <h2 id="xpose-title">Your browser chat.<br>A local model endpoint.</h2>
+          <p>XposE gives OpenCode and other custom-provider clients an authenticated API on <code>127.0.0.1</code>, while the selected conversation stays inside its existing browser tab.</p>
+        </div>
+
+        <div class="xpose-grid">
+          <div class="xpose-console" aria-label="Example XposE terminal output">
+            <div class="xpose-console__bar">
+              <span>TETHER / XPOSE</span>
+              <span class="xpose-console__status"><i></i> Local endpoint</span>
+            </div>
+            <pre><code><span class="console-prompt">$</span> tether xpose
+
+XposE is listening
+Base URL   http://127.0.0.1:8766/v1
+Model      tether-browser
+API key    stored locally · reused on restart
+
+Waiting for one XposE browser tab…</code></pre>
+            <div class="xpose-console__foot">
+              <span>Loopback only</span>
+              <span>Bearer protected</span>
+              <span>No browser CORS</span>
+            </div>
+          </div>
+
+          <div class="xpose-guide">
+            <ol class="xpose-steps">
+              <li>
+                <span>01</span>
+                <div>
+                  <h3>Start the companion</h3>
+                  <p>Stop a plain <code>tether</code> process, then run <code>tether xpose</code>. The token is generated once and reused.</p>
+                </div>
+              </li>
+              <li>
+                <span>02</span>
+                <div>
+                  <h3>Own one browser tab</h3>
+                  <p>In the side panel choose <strong>XposE</strong>, then activate the authenticated conversation you want to expose.</p>
+                </div>
+              </li>
+              <li>
+                <span>03</span>
+                <div>
+                  <h3>Add a custom provider</h3>
+                  <p>Use the values below in OpenCode or any client that accepts an OpenAI-compatible base URL.</p>
+                </div>
+              </li>
+            </ol>
+
+            <dl class="xpose-config">
+              <div><dt>Provider ID</dt><dd><code>tether</code></dd></div>
+              <div><dt>Base URL</dt><dd><code>http://127.0.0.1:8766/v1</code></dd></div>
+              <div><dt>Model ID</dt><dd><code>tether-browser</code></dd></div>
+              <div><dt>API key</dt><dd>Use the token printed in the terminal</dd></div>
+              <div><dt>Headers</dt><dd>Leave empty</dd></div>
+            </dl>
+
+            <a class="text-link" href="https://github.com/RaphaelBlaster/TETHER/blob/main/docs/xpose.md">Read the complete XposE API guide <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+
+        <div class="xpose-capabilities" aria-label="XposE API capabilities">
+          <span>GET /v1/models</span>
+          <span>POST /v1/responses</span>
+          <span>POST /v1/chat/completions</span>
+          <span>Function tools</span>
+          <span>Client cancellation</span>
+        </div>
+        <p class="xpose-streaming-note"><strong>Streaming, honestly:</strong> browser providers expose a stable completed answer, so XposE emits valid SSE after that answer stabilizes. It does not fabricate token-by-token timing.</p>
       </section>
 
       <section class="section architecture-section" id="architecture" aria-labelledby="architecture-title">
