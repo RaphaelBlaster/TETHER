@@ -1,0 +1,2 @@
+provider-adapters/*.json text eol=lf
+provider-adapters/**/*.json text eol=lf
