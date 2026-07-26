@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "registryVersion": 2,
-  "generatedAt": "2026-07-24T03:25:23.784Z",
+  "registryVersion": 6,
+  "generatedAt": "2026-07-26T05:13:08.237Z",
   "providers": {
     "arena.ai": {
       "origin": "https://arena.ai",
@@ -11,9 +11,15 @@
     },
     "chat.deepseek.com": {
       "origin": "https://chat.deepseek.com",
-      "adapterVersion": 1,
+      "adapterVersion": 2,
       "url": "./sites/chat.deepseek.com.json",
-      "sha256": "f04d52d484a024fc357d94a7c19261fb16f10ed518358bdf8ab617d06d467545"
+      "sha256": "26cbb1da729f6a7e5851b281d6fe03dadc9dcda7af35a839082b69a1973e2060"
+    },
+    "chat.inceptionlabs.ai": {
+      "origin": "https://chat.inceptionlabs.ai",
+      "adapterVersion": 1,
+      "url": "./sites/chat.inceptionlabs.ai.json",
+      "sha256": "085866383dade72ff66857a52be907956e3553383d0dbd69ea28e64a8e0e9973"
     },
     "chat.openai.com": {
       "origin": "https://chat.openai.com",

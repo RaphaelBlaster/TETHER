@@ -14,7 +14,8 @@ const files = (await readdir(sitesDirectory))
 const providers = {}
 for (const file of files) {
   const bytes = await readFile(resolve(sitesDirectory, file))
-  const manifest = validateProviderAdapterManifest(bytes.toString('utf8'))
+  const canonicalManifest = normalizeManifestText(bytes.toString('utf8'))
+  const manifest = validateProviderAdapterManifest(canonicalManifest)
   const host = new URL(manifest.origin).hostname
   if (providers[host]) {
     throw new Error(`Duplicate registry host: ${host}`)
@@ -23,7 +24,7 @@ for (const file of files) {
     origin: manifest.origin,
     adapterVersion: manifest.adapterVersion,
     url: `./sites/${file}`,
-    sha256: createHash('sha256').update(bytes).digest('hex'),
+    sha256: createHash('sha256').update(canonicalManifest).digest('hex'),
   }
 }
 
@@ -76,6 +77,10 @@ async function readJson(path) {
     if (error.code === 'ENOENT') return null
     throw error
   }
+}
+
+function normalizeManifestText(value) {
+  return value.replace(/\r\n/g, '\n')
 }
 
 function parsePositiveInt(value) {

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "origin": "https://chat.deepseek.com",
-  "adapterVersion": 1,
+  "adapterVersion": 2,
   "engineVersion": 1,
   "composer": {
     "selectors": [
@@ -13,6 +13,7 @@
   },
   "send": {
     "selectors": [
+      "div[role=\"button\"].ds-button.ds-button--primary.ds-button--filled.ds-button--circle",
       "button[type=\"submit\"]",
       "div[role=\"button\"][aria-label*=\"Send\" i]",
       "button[aria-label*=\"Send\" i]",
