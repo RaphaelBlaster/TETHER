@@ -20,6 +20,20 @@ test('catalog verifies the Git-published index and provider checksum', async () 
   const provider = await catalog.manifestForOrigin('https://tinker.thinkingmachines.ai')
   assert.equal(provider.manifest.origin, 'https://tinker.thinkingmachines.ai')
   assert.match(provider.etag, /^"[a-f0-9]{64}"$/)
+  const deepseek = await catalog.manifestForOrigin('https://chat.deepseek.com')
+  assert.equal(deepseek.manifest.adapterVersion, 3)
+  assert.equal(
+    deepseek.manifest.composer.selectors[0],
+    'textarea[placeholder="Message DeepSeek"]',
+  )
+  assert.equal(
+    deepseek.manifest.response.turnSelectors[0],
+    '.ds-message:has(.ds-assistant-message-main-content)',
+  )
+  assert.deepEqual(
+    deepseek.manifest.response.contentSelectors,
+    ['.ds-assistant-message-main-content'],
+  )
   assert.equal(await catalog.manifestForOrigin('https://unknown.example'), null)
   database.close()
 })

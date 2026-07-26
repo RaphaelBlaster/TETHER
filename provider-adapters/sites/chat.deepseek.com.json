@@ -1,10 +1,11 @@
 {
   "schemaVersion": 1,
   "origin": "https://chat.deepseek.com",
-  "adapterVersion": 2,
+  "adapterVersion": 3,
   "engineVersion": 1,
   "composer": {
     "selectors": [
+      "textarea[placeholder=\"Message DeepSeek\"]",
       "textarea",
       "[contenteditable=\"true\"]",
       "textarea#chat-input",
@@ -22,17 +23,21 @@
   },
   "response": {
     "turnSelectors": [
-      ".ds-markdown",
+      ".ds-message:has(.ds-assistant-message-main-content)",
       ".message-assistant",
       "[class*=\"assistant\"]"
     ],
-    "contentSelectors": [],
+    "contentSelectors": [
+      ".ds-assistant-message-main-content"
+    ],
     "excludeSelectors": []
   },
   "completion": {
     "stopSelectors": [
       "button[aria-label*=\"Stop\" i]"
     ],
-    "progressSelectors": []
+    "progressSelectors": [
+      "div[role=\"button\"].ds-button.ds-button--primary.ds-button--filled.ds-button--circle .ds-loading"
+    ]
   }
 }
