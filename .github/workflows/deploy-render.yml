@@ -1,0 +1,84 @@
+name: Validate and deploy Render registry
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/deploy-render.yml"
+      - "provider-adapters/**"
+      - "registry-server/**"
+      - "package.json"
+      - "package-lock.json"
+      - "render.yaml"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/deploy-render.yml"
+      - "provider-adapters/**"
+      - "registry-server/**"
+      - "package.json"
+      - "package-lock.json"
+      - "render.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tether-render-production
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate provider registry
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.1
+          cache: npm
+          cache-dependency-path: registry-server/package-lock.json
+
+      - name: Install registry dependencies
+        run: npm --prefix registry-server ci
+
+      - name: Run registry tests
+        run: npm --prefix registry-server test
+
+      - name: Validate provider manifests and index
+        run: |
+          npm run registry:build
+          git diff --exit-code -- provider-adapters/index.json provider-adapters/index.sig.json
+
+  deploy:
+    name: Deploy registry to Render
+    needs: validate
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+
+    steps:
+      - name: Trigger Render deployment
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "::error::Add the Render deploy hook as the RENDER_DEPLOY_HOOK_URL GitHub Actions secret."
+            exit 1
+          fi
+
+          curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --request POST \
+            "$RENDER_DEPLOY_HOOK_URL"
