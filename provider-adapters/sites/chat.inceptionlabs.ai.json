@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "origin": "https://chat.inceptionlabs.ai",
+  "adapterVersion": 1,
+  "engineVersion": 1,
+  "composer": {
+    "selectors": [
+      "textarea[placeholder=\"How can I help you?\"]",
+      "textarea"
+    ]
+  },
+  "send": {
+    "selectors": [
+      "button[aria-label=\"Send message\"]",
+      "button[type=\"submit\"]"
+    ]
+  },
+  "response": {
+    "turnSelectors": [
+      "div.flex.justify-start"
+    ],
+    "contentSelectors": [
+      ".prose-chat"
+    ],
+    "excludeSelectors": []
+  },
+  "completion": {
+    "stopSelectors": [
+      "button[aria-label*=\"Stop\" i]",
+      "button[aria-label*=\"Cancel\" i]"
+    ],
+    "progressSelectors": []
+  }
+}

@@ -19,7 +19,7 @@ export function createRegistryCatalog({
 
     const body = await readFile(path, 'utf8')
     const index = validateIndex(JSON.parse(body))
-    const sha256 = hash(body)
+    const sha256 = hashManifest(body)
     snapshot = {
       body,
       index,
@@ -45,14 +45,14 @@ export function createRegistryCatalog({
 
     const cacheKey = `manifest:${descriptor.sha256}`
     let body = await cache.getCache(cacheKey)
-    if (body && hash(body) !== descriptor.sha256) body = null
+    if (body && hashManifest(body) !== descriptor.sha256) body = null
     if (!body) {
       const path = safeRegistryPath(root, descriptor.url)
       body = await readFile(path, 'utf8')
       if (Buffer.byteLength(body, 'utf8') > 64 * 1024) {
         throw coded('manifest_too_large', 'Published provider adapter exceeds 64 KiB')
       }
-      if (hash(body) !== descriptor.sha256) {
+      if (hashManifest(body) !== descriptor.sha256) {
         throw coded('manifest_checksum_mismatch', 'Published provider adapter checksum does not match the index')
       }
       await cache.setCache(cacheKey, body, 60)
@@ -128,6 +128,10 @@ function normalizeOrigin(value) {
 
 function hash(value) {
   return createHash('sha256').update(value).digest('hex')
+}
+
+function hashManifest(value) {
+  return hash(value.replace(/\r\n/g, '\n'))
 }
 
 function quoteEtag(value) {
