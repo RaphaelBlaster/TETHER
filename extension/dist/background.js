@@ -248,6 +248,36 @@ import{a as e,i as t,t as n}from"./assets/panel-state-model-D-qQZeYP.js";var r=[
       return null;
     }
 
+    // Anonymous React controls often have no id, test-id, or accessible name.
+    // Preserve an exact manifest/calibration selector when it uniquely resolves
+    // the selected live node so later actionability and click passes can
+    // re-query a replacement node instead of depending on a stale fingerprint.
+    function configuredSelector(el, selectors) {
+      if (!el) return null;
+      for (const selector of selectors || []) {
+        try {
+          const matches = document.querySelectorAll(selector);
+          if (matches.length === 1 && matches[0] === el) return selector;
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    const composerSelector = bestComposer
+      ? cssPath(bestComposer.fingerprint) ||
+        configuredSelector(composerEls[bestComposer.index], [
+          ...cfg.calibratedComposerSelectors,
+          ...cfg.composerHints,
+        ])
+      : null;
+    const sendSelector = bestSend
+      ? cssPath(bestSend.fingerprint) ||
+        configuredSelector(sendEls[bestSend.index], [
+          ...cfg.calibratedSendSelectors,
+          ...cfg.submitHints,
+        ])
+      : null;
+
     return {
       composer: bestComposer
         ? {
@@ -257,7 +287,7 @@ import{a as e,i as t,t as n}from"./assets/panel-state-model-D-qQZeYP.js";var r=[
               : bestComposer.providerHint
                 ? 'provider_hint'
                 : 'semantic',
-            selector: cssPath(bestComposer.fingerprint),
+            selector: composerSelector,
           }
         : null,
       send: bestSend
@@ -268,7 +298,7 @@ import{a as e,i as t,t as n}from"./assets/panel-state-model-D-qQZeYP.js";var r=[
               : bestSend.providerHint
                 ? 'provider_hint'
                 : 'semantic',
-            selector: cssPath(bestSend.fingerprint),
+            selector: sendSelector,
           }
         : null,
       composerCount: composerCandidates.length,
