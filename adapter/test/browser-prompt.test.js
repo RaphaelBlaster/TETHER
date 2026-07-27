@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildBrowserPrompt, buildProtocolBootstrapPrompt, buildToolDemoPrompt } from '../src/browser-prompt.js'
+import {
+  buildBrowserPrompt,
+  buildProtocolBootstrapPrompt,
+  buildToolDemoPrompt,
+  buildUnavailableToolPrompt,
+} from '../src/browser-prompt.js'
 
 test('protocol bootstrap is an explicit instructional turn with examples and correlated acknowledgement', () => {
   const prompt = buildProtocolBootstrapPrompt('bootstrap-1')
@@ -10,9 +15,36 @@ test('protocol bootstrap is an explicit instructional turn with examples and cor
   assert.match(prompt, /protocol_help_request/)
   assert.match(prompt, /windows-json/)
   assert.match(prompt, /JSON-escape/)
+  assert.match(prompt, /final answer as ordinary plain text/)
+  assert.match(prompt, /Do not wrap a final answer in assistant_text JSON/)
+  assert.match(prompt, /codex_turn arrives automatically after every tool call/)
+  assert.match(prompt, /Never stop merely because one tool call completed/)
+  assert.match(prompt, /tether_tool_unavailable/)
+  assert.match(prompt, /Never install or download it without explicit authorization/)
   assert.doesNotMatch(prompt, /COPY_FROM_REQUEST|COPY_THE_REQUEST_ID/)
   assert.match(prompt, /"requestId":"bootstrap-1"/)
   assert.ok(prompt.length < 4_000)
+})
+
+test('unavailable-tool recovery includes the rejected request, real catalog, and installation consent policy', () => {
+  const payload = JSON.parse(buildUnavailableToolPrompt({
+    requestId: 'request-1.tool-unavailable.1',
+    originalRequestId: 'request-1',
+    originalCommand: '{"type":"codex_turn"}',
+    requestedTools: [{ name: 'invented_tool' }],
+    offeredTools: [{ name: 'shell_command' }],
+    attempt: 1,
+    maxAttempts: 3,
+  }))
+  assert.equal(payload.type, 'tether_tool_unavailable')
+  assert.deepEqual(payload.requestedTools, [{ name: 'invented_tool' }])
+  assert.deepEqual(payload.offeredTools, [{ name: 'shell_command' }])
+  assert.equal(payload.attempt, 1)
+  assert.equal(payload.maxAttempts, 3)
+  assert.match(payload.instruction, /offered tool can perform the work/)
+  assert.match(payload.instruction, /asking the user for permission/)
+  assert.match(payload.instruction, /from which source/)
+  assert.match(payload.instruction, /Never install or download anything without explicit user authorization/)
 })
 
 test('compact turns contain only the command after the protocol bootstrap', () => {
@@ -42,6 +74,7 @@ test('compact turns contain only the command after the protocol bootstrap', () =
         role: 'user',
         content: [{ type: 'input_text', text: 'Read C:\\Users\\Me\\file.pdf' }],
       }],
+      completionPolicy: 'continue_until_objective_complete_or_user_input_required',
       toolChoice: 'auto',
       parallelToolCalls: false,
     },

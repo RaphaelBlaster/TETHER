@@ -20,6 +20,7 @@ export function projectCompactRequest({ requestId, request, conversation = null,
     ...(toolCatalog ? { toolCatalog } : {}),
     turn: {
       input: delta,
+      completionPolicy: 'continue_until_objective_complete_or_user_input_required',
       toolChoice: request.tool_choice ?? 'auto',
       parallelToolCalls: request.parallel_tool_calls === true,
       ...(request.reasoning ? { reasoning: request.reasoning } : {}),
@@ -29,14 +30,16 @@ export function projectCompactRequest({ requestId, request, conversation = null,
 
 export function compactProjectionState(request, { conversation = null, connectionId = null } = {}) {
   const sameConnection = conversation?.codexConnectionId === connectionId
-  const delivered = new Set(sameConnection ? conversation.deliveredInputHashes ?? [] : [])
-  for (const item of request.input ?? []) delivered.add(digest(item))
+  const inputHashes = browserVisibleInput(request.input ?? []).map(digest)
+  const delivered = sameConnection
+    ? mergeInputOccurrences(conversation.deliveredInputHashes ?? [], inputHashes)
+    : inputHashes
   const { context } = splitInput(request.input ?? [], request.previous_response_id == null, conversation, connectionId)
   return {
     ...compactAssets(request),
     contextHash: context.length ? digest(context) : conversation?.contextHash ?? digest([]),
     codexConnectionId: connectionId,
-    deliveredInputHashes: [...delivered],
+    deliveredInputHashes: delivered,
   }
 }
 
@@ -89,11 +92,36 @@ function compactAssets(request) {
 function splitInput(input, initial, conversation, connectionId) {
   input = browserVisibleInput(input)
   if (conversation?.codexConnectionId === connectionId) {
-    const delivered = new Set(conversation.deliveredInputHashes ?? [])
-    return { context: [], delta: input.filter((item) => !delivered.has(digest(item))) }
+    const delivered = occurrenceCounts(conversation.deliveredInputHashes ?? [])
+    return {
+      context: [],
+      delta: input.filter((item) => {
+        const hash = digest(item)
+        const remaining = delivered.get(hash) ?? 0
+        if (remaining === 0) return true
+        delivered.set(hash, remaining - 1)
+        return false
+      }),
+    }
   }
   if (!initial || input.length <= 1 || input.some((item) => isToolResult(item))) return { context: [], delta: input }
   return { context: input.slice(0, -1), delta: input.slice(-1) }
+}
+
+function mergeInputOccurrences(previous, current) {
+  const merged = [...previous]
+  const mergedCounts = occurrenceCounts(merged)
+  const currentCounts = occurrenceCounts(current)
+  for (const [hash, count] of currentCounts) {
+    for (let index = mergedCounts.get(hash) ?? 0; index < count; index += 1) merged.push(hash)
+  }
+  return merged
+}
+
+function occurrenceCounts(hashes) {
+  const counts = new Map()
+  for (const hash of hashes) counts.set(hash, (counts.get(hash) ?? 0) + 1)
+  return counts
 }
 
 function browserVisibleInput(input) {

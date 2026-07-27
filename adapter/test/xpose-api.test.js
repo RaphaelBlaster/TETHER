@@ -140,6 +140,34 @@ test('XposE serves authenticated Models, Responses, Chat Completions, tools, and
   assert.equal(responsesBody.object, 'response')
   assert.equal(responsesBody.output[0].content[0].text, 'browser:hello from responses')
 
+  const codexTools = await authenticatedFetch(`${info.baseUrl}/responses`, {
+    method: 'POST',
+    body: JSON.stringify({
+      model: 'tether-browser',
+      input: 'hello from Codex tools',
+      tools: [
+        {
+          type: 'namespace',
+          name: 'workspace',
+          tools: [{
+            type: 'function',
+            name: 'read_file',
+            description: 'Read one file.',
+            parameters: {
+              type: 'object',
+              properties: { path: { type: 'string' } },
+              required: ['path'],
+            },
+          }],
+        },
+        { type: 'web_search' },
+      ],
+    }),
+  })
+  assert.equal(codexTools.status, 200)
+  const codexToolsBody = await codexTools.json()
+  assert.equal(codexToolsBody.output[0].content[0].text, 'browser:hello from Codex tools')
+
   const streamed = await authenticatedFetch(`${info.baseUrl}/chat/completions`, {
     method: 'POST',
     body: JSON.stringify({

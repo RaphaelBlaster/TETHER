@@ -58,7 +58,11 @@ export function buildClickSendScript({ sendFp, sendSelector }) {
     }
 
     const r = el.getBoundingClientRect();
-    const disabled = el.disabled === true || el.getAttribute('aria-disabled') === 'true';
+    const className = typeof el.className === 'string' ? el.className : '';
+    const disabled =
+      el.disabled === true ||
+      el.getAttribute('aria-disabled') === 'true' ||
+      (' ' + className + ' ').includes(' ds-button--disabled ');
     const st = window.getComputedStyle(el);
 
     if (!el.isConnected || !isVisible(el) || disabled || st.pointerEvents === 'none' || r.width < 1 || r.height < 1) {

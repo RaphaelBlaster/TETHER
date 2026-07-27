@@ -110,6 +110,7 @@ function App() {
   const siteAccessSequenceRef = React.useRef(0)
   const calibrationSequenceRef = React.useRef(0)
   const bindingRef = React.useRef({ tabId: null, version: 0 })
+  const protectedTabIdRef = React.useRef(null)
   const connectionMomentSequence = React.useRef(0)
   const [connectionMoment, setConnectionMoment] = React.useState(null)
   const crossRole = panelState.activation?.role ?? crossRoleChoice
@@ -118,6 +119,17 @@ function App() {
   const isCurrentBinding = React.useCallback((ticket) => (
     ticket.version === bindingRef.current.version && ticket.tabId === bindingRef.current.tabId
   ), [])
+
+  React.useEffect(() => {
+    if (
+      panelState.activation?.state === 'active' &&
+      Number.isInteger(panelState.tabId)
+    ) {
+      protectedTabIdRef.current = panelState.tabId
+    } else if (protectedTabIdRef.current === panelState.tabId) {
+      protectedTabIdRef.current = null
+    }
+  }, [panelState.activation?.state, panelState.tabId])
 
   React.useEffect(() => {
     if (!globalThis.chrome?.runtime) return undefined
@@ -200,7 +212,11 @@ function App() {
       port.postMessage({ type: 'panel.bind', tabId })
     }
     const onActivated = (activeInfo) => {
-      if (shouldBindPanelToActivation(panelWindowIdRef.current, activeInfo)) bind(activeInfo.tabId)
+      if (shouldBindPanelToActivation(
+        panelWindowIdRef.current,
+        activeInfo,
+        protectedTabIdRef.current,
+      )) bind(activeInfo.tabId)
     }
     const onPortMessage = (message) => {
       if (message?.type === 'panel.bound' && message.tabId === bindingRef.current.tabId) {

@@ -29,6 +29,14 @@ test('known LLM origins expose built-in adapters without deciding the CROSS role
   }
 })
 
+test('DeepSeek chat routes expose a stable conversation identity', () => {
+  const site = inspectSite(
+    'https://chat.deepseek.com/a/chat/s/deepseek-thread-1',
+  )
+  assert.equal(site.providerId, 'deepseek')
+  assert.equal(site.conversationId, 'deepseek-thread-1')
+})
+
 test('selector requests are offered to likely AI sites using only their canonical origin', () => {
   const site = inspectSite('https://tinker.thinkingmachines.ai/playground/users/me/chats/private?token=nope')
   assert.equal(site.origin, 'https://tinker.thinkingmachines.ai')

@@ -6,6 +6,7 @@ import {
   buildActionabilityScript,
   buildDiscoveryScript,
 } from './automation/element-discovery.js'
+import { buildClickSendScript } from './automation/submission-controller.js'
 
 const COMPOSER_SELECTOR = 'textarea[placeholder="Message DeepSeek"]'
 const SEND_SELECTOR =
@@ -42,6 +43,63 @@ test('preserves a unique provider selector for an anonymous React send control',
   assert.equal(result.send.method, 'provider_hint')
 })
 
+test('discovery reports the DeepSeek class-disabled send control as disabled', () => {
+  const composer = element({
+    tagName: 'TEXTAREA',
+    attributes: { placeholder: 'Message DeepSeek' },
+    value: 'hello',
+    rect: { left: 100, top: 500, width: 600, height: 100 },
+  })
+  const send = element({
+    tagName: 'DIV',
+    attributes: { role: 'button' },
+    className:
+      'ds-button ds-button--primary ds-button--filled ds-button--circle ds-button--disabled',
+    rect: { left: 650, top: 530, width: 40, height: 40 },
+  })
+  const document = documentFor(new Map([
+    [COMPOSER_SELECTOR, [composer]],
+    [SEND_SELECTOR, [send]],
+  ]))
+
+  const result = vm.runInNewContext(
+    buildDiscoveryScript({
+      composerHints: [COMPOSER_SELECTOR],
+      submitHints: [SEND_SELECTOR],
+    }),
+    pageContext(document),
+  )
+
+  assert.equal(result.send.selector, SEND_SELECTOR)
+  assert.equal(result.send.disabled, true)
+  assert.equal(result.send.enabled, false)
+})
+
+test('actionability waits while DeepSeek keeps the send control class-disabled', () => {
+  const disabledSend = element({
+    tagName: 'DIV',
+    attributes: { role: 'button' },
+    className:
+      'ds-button ds-button--primary ds-button--filled ds-button--circle ds-button--disabled',
+    rect: { left: 650, top: 530, width: 40, height: 40 },
+  })
+  const document = documentFor(new Map([[SEND_SELECTOR, [disabledSend]]]))
+
+  const result = vm.runInNewContext(
+    buildActionabilityScript({
+      composerFp: null,
+      sendFp: null,
+      composerSelector: null,
+      sendSelector: SEND_SELECTOR,
+    }),
+    pageContext(document),
+  )
+
+  assert.equal(result.hasSend, true)
+  assert.equal(result.send.disabled, true)
+  assert.equal(result.send.actionable, false)
+})
+
 test('actionability re-queries the enabled anonymous React control through the provider selector', () => {
   const enabledReplacement = element({
     tagName: 'DIV',
@@ -68,6 +126,30 @@ test('actionability re-queries the enabled anonymous React control through the p
   assert.equal(result.send.connected, true)
   assert.equal(result.send.disabled, false)
   assert.equal(result.send.actionable, true)
+})
+
+test('final click guard rejects a DeepSeek class-disabled send control', () => {
+  const disabledSend = element({
+    tagName: 'DIV',
+    attributes: { role: 'button' },
+    className:
+      'ds-button ds-button--primary ds-button--filled ds-button--circle ds-button--disabled',
+    rect: { left: 650, top: 530, width: 40, height: 40 },
+  })
+  const document = documentFor(new Map([[SEND_SELECTOR, [disabledSend]]]))
+
+  const result = vm.runInNewContext(
+    buildClickSendScript({
+      sendFp: null,
+      sendSelector: SEND_SELECTOR,
+    }),
+    pageContext(document),
+  )
+
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'send_not_actionable')
+  assert.equal(result.clickable, false)
+  assert.equal(result.diagnostics.disabled, true)
 })
 
 function element({

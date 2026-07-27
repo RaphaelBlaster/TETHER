@@ -145,6 +145,71 @@ test('Tinker fixture extraction returns only the final answer while generation i
   assert.doesNotMatch(result.text, /TETHER user prompt|Thought:/)
 })
 
+test('hidden progress controls do not keep a completed response streaming', () => {
+  const contentNode = textNode('TETHER_COMPLETE')
+  const finalTurn = elementNode('final turn', new Map([['p', [contentNode]]]))
+  const hiddenProgress = {
+    ...elementNode('Response in progress'),
+    getClientRects: () => [],
+  }
+  const selectorMap = new Map([
+    [TINKER_TURN, [finalTurn]],
+    ['[role="status"]', [hiddenProgress]],
+  ])
+  const document = {
+    querySelectorAll: (selector) => selectorMap.get(selector) ?? [],
+    querySelector: (selector) => (selectorMap.get(selector) ?? [])[0] ?? null,
+  }
+  const script = buildExtractAssistantScript({
+    baseline: {
+      assistantCount: 0,
+      assistantTexts: [],
+      assistantSelectors: [TINKER_TURN],
+    },
+    response: {
+      turnSelectors: [TINKER_TURN],
+      contentSelectors: ['p'],
+      excludeSelectors: [],
+    },
+    progressHints: ['[role="status"]'],
+  })
+  const result = vm.runInNewContext(script, { document, Set })
+
+  assert.equal(result.found, true)
+  assert.equal(result.text, 'TETHER_COMPLETE')
+  assert.equal(result.streaming, false)
+})
+
+test('an unchanged long baseline response is not mistaken for a new turn', () => {
+  const text = `${'A'.repeat(700)}TAIL`
+  const previousTurn = elementNode(text)
+  const selectorMap = new Map([[TINKER_TURN, [previousTurn]]])
+  const document = {
+    querySelectorAll: (selector) => selectorMap.get(selector) ?? [],
+    querySelector: (selector) => (selectorMap.get(selector) ?? [])[0] ?? null,
+  }
+  const script = buildExtractAssistantScript({
+    baseline: {
+      assistantCount: 1,
+      assistantTexts: [{
+        text: text.slice(0, 500),
+        suffix: text.slice(-500),
+        len: text.length,
+      }],
+      assistantSelectors: [TINKER_TURN],
+    },
+    response: {
+      turnSelectors: [TINKER_TURN],
+      contentSelectors: [],
+      excludeSelectors: [],
+    },
+  })
+  const result = vm.runInNewContext(script, { document, Set })
+
+  assert.equal(result.found, false)
+  assert.equal(result.text, '')
+})
+
 function textNode(text) {
   return elementNode(text)
 }

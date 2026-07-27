@@ -2,7 +2,8 @@
  * Single shared browser-turn pipeline.
  * Used by both adapter browser_request and side-panel development test.
  *
- * Engine: direct CDP via chrome.debugger (no puppeteer.launch, no remote port).
+ * Engine: Puppeteer over chrome.debugger ExtensionTransport in production,
+ * with the direct-CDP adapter retained for deterministic unit tests.
  */
 
 import { getProviderById, matchProviderByOrigin } from '../provider-registry.js';
@@ -33,11 +34,17 @@ function fail(code, message, diagnostics) {
   throw new AutomationError(code, message, diagnostics);
 }
 
-function buildVerifyPromptScript({ composerFp, composerSelector, prompt }) {
+function buildVerifyPromptScript({
+  composerFp,
+  composerSelector,
+  prompt,
+  focus = false,
+}) {
   return `(() => {
     const expected = ${JSON.stringify(prompt)};
     const composerFp = ${JSON.stringify(composerFp)};
     const composerSelector = ${JSON.stringify(composerSelector)};
+    const shouldFocus = ${JSON.stringify(focus)};
 
     function matchFp(el, fp) {
       if (!el || !fp) return false;
@@ -57,6 +64,7 @@ function buildVerifyPromptScript({ composerFp, composerSelector, prompt }) {
         document.querySelector('textarea');
     }
     if (!el) return { ok: false, code: 'composer_not_found' };
+    if (shouldFocus) el.focus();
 
     const value = (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT')
       ? String(el.value || '')
@@ -65,15 +73,45 @@ function buildVerifyPromptScript({ composerFp, composerSelector, prompt }) {
     // Exact ownership is important: containment accepts a stale composer with
     // multiple concatenated TETHER requests, which the provider will not obey.
     const ok = norm(value) === norm(expected);
-    return { ok, length: value.length, preview: value.slice(0, 120) };
+    return {
+      ok,
+      focused: !shouldFocus || document.activeElement === el,
+      length: value.length,
+      preview: value.slice(0, 120),
+    };
   })()`;
+}
+
+export function submissionMethodForProvider(providerId) {
+  return providerId === 'deepseek' ? 'keyboard_enter' : 'pointer';
+}
+
+export function shouldRetryDeepSeekSubmission(result, promptLength) {
+  const evidence = result?.evidence;
+  return Boolean(
+    !result?.submitted &&
+    evidence &&
+    evidence.composerChanged === false &&
+    evidence.composerLength === promptLength &&
+    evidence.userIncreased === false &&
+    evidence.promptSeenInUser === false &&
+    evidence.stopVisible === false &&
+    evidence.asstIncreased === false
+  );
 }
 
 /**
  * @param {object} deps
  */
-export function createBrowserAutomation({ transport, calibrationStore, adapterRegistry } = {}) {
-  const cdp = createCdpClient(transport);
+export function createBrowserAutomation({
+  transport,
+  driver,
+  calibrationStore,
+  adapterRegistry,
+} = {}) {
+  const cdp = driver ?? createCdpClient(transport);
+  const lifecycle = driver ?? transport;
+  const engine = driver?.getEngine?.() ?? ENGINE;
 
   /** @type {Map<string, { promise: Promise<any>, result?: any, error?: any, status: string }>} */
   const idempotency = new Map();
@@ -94,7 +132,7 @@ export function createBrowserAutomation({ transport, calibrationStore, adapterRe
   async function ensureAttached(tabId, onStage) {
     onStage?.(OperationStage.ATTACHING_DEBUGGER);
     try {
-      await transport.attach(tabId);
+      await lifecycle.attach(tabId);
     } catch (err) {
       fail(
         ErrorCodes.DEBUGGER_ATTACH_FAILED,
@@ -108,10 +146,10 @@ export function createBrowserAutomation({ transport, calibrationStore, adapterRe
     // FluidGlass previously kept a page-owned animation frame alive as an
     // accidental side effect. Explicitly keep the provider target active and
     // focused instead, without changing the user's selected browser tab.
-    await transport.sendCommand(tabId, 'Page.enable').catch(() => {})
+    await lifecycle.sendCommand(tabId, 'Page.enable').catch(() => {})
     await Promise.all([
-      transport.sendCommand(tabId, 'Page.setWebLifecycleState', { state: 'active' }).catch(() => {}),
-      transport.sendCommand(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {}),
+      lifecycle.sendCommand(tabId, 'Page.setWebLifecycleState', { state: 'active' }).catch(() => {}),
+      lifecycle.sendCommand(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {}),
     ])
   }
 
@@ -264,15 +302,29 @@ export function createBrowserAutomation({ transport, calibrationStore, adapterRe
 
         stage(OperationStage.WRITING_PROMPT, { length: prompt.length });
 
-        let writeResult = await cdp.evaluate(
-          tabId,
-          buildWritePromptScript({
-            composerFp: discovery.composer.fingerprint,
-            composerSelector: discovery.composer.selector,
-            prompt,
-            clearFirst,
-          })
-        );
+        let writeResult;
+        if (driver?.fill && discovery.composer.selector) {
+          try {
+            await driver.fill(tabId, discovery.composer.selector, prompt);
+            writeResult = { ok: true, method: 'puppeteer_keyboard' };
+          } catch (error) {
+            writeResult = {
+              ok: false,
+              code: error?.code,
+              message: error?.message,
+            };
+          }
+        } else {
+          writeResult = await cdp.evaluate(
+            tabId,
+            buildWritePromptScript({
+              composerFp: discovery.composer.fingerprint,
+              composerSelector: discovery.composer.selector,
+              prompt,
+              clearFirst,
+            })
+          );
+        }
 
         if (!writeResult?.ok) {
           try {
@@ -390,35 +442,65 @@ export function createBrowserAutomation({ transport, calibrationStore, adapterRe
         }
 
         stage(OperationStage.SUBMITTING);
-        const clickGuard = createClickOnceGuard();
-        clickGuard.click();
-
-        const clickResult = await cdp.evaluate(
-          tabId,
-          buildClickSendScript({
-            sendFp: sendMeta.fingerprint,
-            sendSelector: sendMeta.selector,
-          })
-        );
-
-        if (!clickResult?.clickable) {
-          fail(
-            clickResult?.code || ErrorCodes.SEND_NOT_ACTIONABLE,
-            clickResult?.message || 'Send click failed',
-            clickResult?.diagnostics
+        const submissionMethod = submissionMethodForProvider(provider?.id ?? providerId);
+        if (submissionMethod === 'keyboard_enter') {
+          // DeepSeek's Send control is a transient React div. It can render an
+          // enabled ripple for a real pointer sequence without committing a
+          // rapid follow-up prompt. Its focused textarea handles native Enter
+          // reliably and avoids coordinate hit-testing entirely.
+          const focusedPrompt = await cdp.evaluate(
+            tabId,
+            buildVerifyPromptScript({
+              composerFp: discovery.composer.fingerprint,
+              composerSelector: discovery.composer.selector,
+              prompt,
+              focus: true,
+            })
           );
-        }
+          if (!focusedPrompt?.ok || !focusedPrompt?.focused) {
+            fail(
+              ErrorCodes.PROMPT_VERIFICATION_FAILED,
+              'DeepSeek composer was not ready for keyboard submission'
+            );
+          }
+          await cdp.pressEnter(tabId);
+        } else {
+          const clickGuard = createClickOnceGuard();
+          clickGuard.click();
 
-        // Use a real CDP pointer sequence rather than `element.click()`. Some
-        // controlled composer implementations ignore a synthetic DOM click.
-        await cdp.mouseClickAt(tabId, clickResult.centerX, clickResult.centerY);
+          if (driver?.clickSelector && sendMeta.selector) {
+            await driver.clickSelector(tabId, sendMeta.selector);
+          } else {
+            const clickResult = await cdp.evaluate(
+              tabId,
+              buildClickSendScript({
+                sendFp: sendMeta.fingerprint,
+                sendSelector: sendMeta.selector,
+              })
+            );
+
+            if (!clickResult?.clickable) {
+              fail(
+                clickResult?.code || ErrorCodes.SEND_NOT_ACTIONABLE,
+                clickResult?.message || 'Send click failed',
+                clickResult?.diagnostics
+              );
+            }
+
+            // Direct-CDP fallback retained for deterministic tests.
+            await cdp.mouseClickAt(tabId, clickResult.centerX, clickResult.centerY);
+          }
+        }
 
         stage(OperationStage.VERIFYING_SUBMISSION);
         let submitted = false;
+        let retriedKeyboardSubmission = false;
+        let lastSubmissionResult = null;
         const submitDeadline = Date.now() + 20000;
+        const keyboardRetryAt = Date.now() + 1500;
         while (Date.now() < submitDeadline) {
           throwIfAborted(linked);
-          const evidence = await cdp.evaluate(
+          const submissionResult = await cdp.evaluate(
             tabId,
             buildSubmissionEvidenceScript({
               baseline: {
@@ -430,16 +512,47 @@ export function createBrowserAutomation({ transport, calibrationStore, adapterRe
               stopHints,
             })
           );
-          if (evidence?.submitted) {
+          lastSubmissionResult = submissionResult;
+          if (submissionResult?.submitted) {
             submitted = true;
             break;
+          }
+          if (
+            submissionMethod === 'keyboard_enter' &&
+            !retriedKeyboardSubmission &&
+            Date.now() >= keyboardRetryAt &&
+            shouldRetryDeepSeekSubmission(submissionResult, prompt.length)
+          ) {
+            const focusedPrompt = await cdp.evaluate(
+              tabId,
+              buildVerifyPromptScript({
+                composerFp: discovery.composer.fingerprint,
+                composerSelector: discovery.composer.selector,
+                prompt,
+                focus: true,
+              })
+            );
+            if (focusedPrompt?.ok && focusedPrompt?.focused) {
+              retriedKeyboardSubmission = true;
+              stage(OperationStage.SUBMITTING, {
+                retry: 1,
+                reason: 'deepseek_prompt_unchanged',
+              });
+              await cdp.pressEnter(tabId);
+              stage(OperationStage.VERIFYING_SUBMISSION);
+            }
           }
           await sleep(200);
         }
         if (!submitted) {
           fail(
             ErrorCodes.SUBMISSION_NOT_OBSERVED,
-            'Submission was not observed after clicking Send'
+            'Submission was not observed after sending the prompt',
+            {
+              submissionMethod,
+              retriedKeyboardSubmission,
+              result: lastSubmissionResult,
+            }
           );
         }
 
@@ -466,21 +579,22 @@ export function createBrowserAutomation({ transport, calibrationStore, adapterRe
               await sleep(250);
               continue;
             }
+            const effectiveStreaming = Boolean(extract.streaming);
             const st = stability.update(extract.text, {
-              streaming: Boolean(extract.streaming),
+              streaming: effectiveStreaming,
             });
             onProgress?.({
-              stage: extract.streaming
+              stage: effectiveStreaming
                 ? OperationStage.OBSERVING_RESPONSE
                 : OperationStage.WAITING_FOR_STABILITY,
               text: extract.text,
-              streaming: extract.streaming,
+              streaming: effectiveStreaming,
             });
             if (st.stable) {
               stage(OperationStage.COMPLETE);
               return {
                 text: extract.text,
-                engine: ENGINE,
+                engine,
                 diagnostics: {
                   composerMethod: discovery.composer.method,
                   sendMethod: sendMeta?.method,
@@ -502,7 +616,7 @@ export function createBrowserAutomation({ transport, calibrationStore, adapterRe
           stage(OperationStage.COMPLETE);
           return {
             text: lastExtract.text,
-            engine: ENGINE,
+            engine,
             diagnostics: { timedOut: true },
           };
         }
@@ -556,14 +670,14 @@ export function createBrowserAutomation({ transport, calibrationStore, adapterRe
 
   async function release(tabId) {
     try {
-      await transport.detach(tabId);
+      await lifecycle.detach(tabId);
     } catch {
       /* ignore */
     }
   }
 
   function getEngine() {
-    return ENGINE;
+    return engine;
   }
 
   function _idempotencyMap() {

@@ -227,8 +227,13 @@ export function inspectSite(url) {
     return { kind: 'restricted', reason: 'browser_restricted' }
   }
   const provider = matchProviderByOrigin(parsed.href)
-  const conversationId = provider?.id === 'chatgpt'
-    ? (/^\/c\/([^/?#]+)/.exec(parsed.pathname)?.[1] ? decodeURIComponent(/^\/c\/([^/?#]+)/.exec(parsed.pathname)[1]) : null)
+  const conversationMatch = provider?.id === 'chatgpt'
+    ? /^\/c\/([^/?#]+)/.exec(parsed.pathname)
+    : provider?.id === 'deepseek'
+      ? /^\/a\/chat\/s\/([^/?#]+)/.exec(parsed.pathname)
+      : null
+  const conversationId = conversationMatch?.[1]
+    ? decodeURIComponent(conversationMatch[1])
     : null
   return {
     kind: 'web',

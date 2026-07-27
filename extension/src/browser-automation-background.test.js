@@ -1,7 +1,43 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createBrowserAutomation } from './automation/browser-automation.js'
+import {
+  createBrowserAutomation,
+  shouldRetryDeepSeekSubmission,
+  submissionMethodForProvider,
+} from './automation/browser-automation.js'
+
+test('uses keyboard submission only for DeepSeek', () => {
+  assert.equal(submissionMethodForProvider('deepseek'), 'keyboard_enter')
+  assert.equal(submissionMethodForProvider('chatgpt'), 'pointer')
+  assert.equal(submissionMethodForProvider('gemini'), 'pointer')
+  assert.equal(submissionMethodForProvider(null), 'pointer')
+})
+
+test('retries DeepSeek Enter only while the exact prompt remains untouched', () => {
+  const untouched = {
+    submitted: false,
+    evidence: {
+      composerChanged: false,
+      composerLength: 2113,
+      userIncreased: false,
+      promptSeenInUser: false,
+      stopVisible: false,
+      asstIncreased: false,
+    },
+  }
+
+  assert.equal(shouldRetryDeepSeekSubmission(untouched, 2113), true)
+  assert.equal(shouldRetryDeepSeekSubmission({
+    ...untouched,
+    evidence: { ...untouched.evidence, composerChanged: true },
+  }, 2113), false)
+  assert.equal(shouldRetryDeepSeekSubmission({
+    ...untouched,
+    evidence: { ...untouched.evidence, stopVisible: true },
+  }, 2113), false)
+  assert.equal(shouldRetryDeepSeekSubmission(untouched, 2114), false)
+})
 
 test('wakes a hidden provider target before reading or writing its DOM', async () => {
   const commands = []

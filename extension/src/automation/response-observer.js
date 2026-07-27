@@ -37,11 +37,15 @@ export function buildBaselineScript({
         try {
           const nodes = [...root().querySelectorAll(s)];
           if (nodes.length) {
-            return nodes.slice(-limit).map((n, i) => ({
-              i,
-              text: (n.innerText || n.textContent || '').trim().slice(0, 500),
-              len: (n.innerText || n.textContent || '').trim().length,
-            }));
+            return nodes.slice(-limit).map((n, i) => {
+              const text = (n.innerText || n.textContent || '').trim();
+              return {
+                i,
+                text: text.slice(0, 500),
+                suffix: text.slice(-500),
+                len: text.length,
+              };
+            });
           }
         } catch (_) {}
       }
@@ -144,10 +148,26 @@ export function buildExtractAssistantScript({
     function any(sels) {
       for (const s of sels || []) {
         try {
-          if (document.querySelector(s)) return true;
+          const elements = [...document.querySelectorAll(s)];
+          if (elements.some((element) => {
+            if (typeof element.getClientRects !== 'function') return true;
+            if (element.getClientRects().length === 0) return false;
+            const style = globalThis.getComputedStyle?.(element);
+            return !style ||
+              (style.display !== 'none' &&
+                style.visibility !== 'hidden' &&
+                Number(style.opacity) !== 0);
+          })) return true;
         } catch (_) {}
       }
       return false;
+    }
+
+    function matchesSnapshot(text, snapshot) {
+      if (!snapshot || text.length !== snapshot.len) return false;
+      if (text.slice(0, 500) !== (snapshot.text || '')) return false;
+      return snapshot.suffix === undefined ||
+        text.slice(-500) === snapshot.suffix;
     }
 
     const asstSels = response?.turnSelectors?.length ? response.turnSelectors : baseline.assistantSelectors || [
@@ -174,15 +194,16 @@ export function buildExtractAssistantScript({
       // Compare against baseline last text — if last changed, treat as new/streaming.
       const last = nodes[nodes.length - 1];
       const text = cleanText(last);
-      const prevLast = (baseline.assistantTexts || []).slice(-1)[0]?.text || '';
-      if (text && text !== prevLast) target = last;
+      const prevLast = (baseline.assistantTexts || []).slice(-1)[0];
+      if (text && !matchesSnapshot(text, prevLast)) target = last;
       else if (nodes.length > prevCount) target = last;
     }
 
     const text = target ? cleanText(target) : '';
     // Ignore if it equals a baseline assistant message exactly and count didn't grow.
-    const baselineSet = new Set((baseline.assistantTexts || []).map((t) => t.text));
-    const isOld = baselineSet.has(text) && nodes.length <= prevCount;
+    const isOld = (baseline.assistantTexts || []).some((snapshot) =>
+      matchesSnapshot(text, snapshot)
+    ) && nodes.length <= prevCount;
 
     const streaming = any(stopSels.concat(progressHints));
 
@@ -196,47 +217,6 @@ export function buildExtractAssistantScript({
       isOld,
     };
   })()`;
-}
-
-/**
- * Incomplete JSON heuristic — do not complete while structure is open.
- */
-export function looksLikeIncompleteJson(text) {
-  if (!text || typeof text !== 'string') return false;
-  const t = text.trim();
-  // Provider UIs may prepend a speaker label such as "Gemini said" before
-  // streamed protocol JSON.  Examine the protocol object itself, not only
-  // character zero, otherwise an unfinished tool_call can look stable and be
-  // returned as ordinary assistant text.
-  const protocolStart = t.search(/\{\s*"schemaVersion"\s*:/);
-  const candidate = protocolStart >= 0 ? t.slice(protocolStart) : t;
-  if (!(candidate.startsWith('{') || candidate.startsWith('['))) return false;
-
-  let inString = false;
-  let escape = false;
-  let depth = 0;
-  for (let i = 0; i < candidate.length; i++) {
-    const ch = candidate[i];
-    if (inString) {
-      if (escape) {
-        escape = false;
-      } else if (ch === '\\') {
-        escape = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-    if (ch === '{' || ch === '[') depth += 1;
-    if (ch === '}' || ch === ']') depth -= 1;
-  }
-  if (inString || escape) return true;
-  if (depth > 0) return true;
-  return false;
 }
 
 /**
@@ -264,8 +244,7 @@ export function createStabilityTracker({
       }
       if (t === lastText) {
         if (!stableSince) stableSince = now;
-        const stable =
-          now - stableSince >= stableMs && !looksLikeIncompleteJson(t);
+        const stable = now - stableSince >= stableMs;
         return { stable, text: t, stableForMs: now - stableSince };
       }
       lastText = t;

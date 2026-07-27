@@ -222,16 +222,27 @@ function normalizeResponsesTools(tools) {
   if (!Array.isArray(tools)) throw httpError(400, 'invalid_request', 'tools must be an array')
   return tools.map((tool) => {
     assertObject(tool, 'Every tool must be an object')
-    if (tool.type !== 'function' || typeof tool.name !== 'string' || !tool.name) {
-      throw httpError(400, 'invalid_request', 'Only named function tools are supported')
+    if (typeof tool.type !== 'string' || !tool.type) {
+      throw httpError(400, 'invalid_request', 'Every Responses tool requires a type')
     }
-    return {
-      type: 'function',
-      name: tool.name,
-      description: typeof tool.description === 'string' ? tool.description : '',
-      parameters: isObject(tool.parameters) ? tool.parameters : { type: 'object', properties: {} },
-      ...(typeof tool.strict === 'boolean' ? { strict: tool.strict } : {}),
+    if (tool.type === 'function') {
+      if (typeof tool.name !== 'string' || !tool.name) {
+        throw httpError(400, 'invalid_request', 'Function tools require a name')
+      }
+      return {
+        type: 'function',
+        name: tool.name,
+        description: typeof tool.description === 'string' ? tool.description : '',
+        parameters: isObject(tool.parameters) ? tool.parameters : { type: 'object', properties: {} },
+        ...(typeof tool.strict === 'boolean' ? { strict: tool.strict } : {}),
+      }
     }
+    // Codex's Responses client also supplies namespace and provider-native
+    // tool records. Preserve those authenticated JSON definitions so the
+    // compact projector can expose their catalog entries and defer an exact
+    // named schema when one is requested. Unnamed provider tools remain
+    // visible as capabilities but cannot pass the offered named-tool check.
+    return cloneJson(tool)
   })
 }
 
@@ -483,6 +494,10 @@ function assertObject(value, message) {
 
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value))
 }
 
 function httpError(status, code, message) {

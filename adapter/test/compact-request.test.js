@@ -60,11 +60,30 @@ test('same-connection repeated input is omitted but a new connection keeps its u
   assert.equal(nextConnection.turn.input[0].content[0].text, 'new user turn')
 })
 
+test('a repeated user command remains visible as a new occurrence in accumulated input', () => {
+  const repeated = { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'read the file' }] }
+  const first = request({ input: [repeated] })
+  const state = compactProjectionState(first, { connectionId: 'conn-1' })
+  const retry = request({ input: [repeated, repeated] })
+  const projected = projectCompactRequest({
+    requestId: 'retry',
+    request: retry,
+    conversation: state,
+    connectionId: 'conn-1',
+  })
+  assert.deepEqual(projected.turn.input, [repeated])
+  assert.deepEqual(compactProjectionState(retry, {
+    conversation: state,
+    connectionId: 'conn-1',
+  }).deliveredInputHashes.length, 2)
+})
+
 test('tool-result continuation preserves the complete output item and does not classify it as static context', () => {
   const output = { type: 'function_call_output', call_id: 'call-1', output: 'TETHER_TOOL_EXECUTED' }
   const continuation = request({ previous_response_id: 'resp-1', input: [output] })
   const projected = projectCompactRequest({ requestId: 'req-3', request: continuation, conversation: compactProjectionState(request(), { connectionId: 'conn-1' }), connectionId: 'conn-1' })
   assert.deepEqual(projected.turn.input, [output])
+  assert.equal(projected.turn.completionPolicy, 'continue_until_objective_complete_or_user_input_required')
 })
 
 test('new user input is not hidden by a previously delivered tool result', () => {

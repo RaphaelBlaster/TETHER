@@ -3,8 +3,10 @@ import { EXTENSION_PROTOCOL, EXTENSION_PROTOCOL_VERSION } from './extension-sess
 import {
   BOOTSTRAP_VERSION,
   buildBrowserPromptSequence,
+  buildCompletionCheckPrompt,
   buildDeferredToolSchemaPrompt,
   buildProtocolHelpPrompt,
+  buildUnavailableToolPrompt,
 } from './browser-prompt.js'
 import { parseBrowserResponse } from './browser-envelope.js'
 import { compactInstallationState, compactProjectionState, selectDeferredToolDefinitions } from './compact-request.js'
@@ -30,13 +32,11 @@ export function createBrowserTurnController({
     if (settled.has(key)) return settled.get(key)
     if (operations.has(key)) return operations.get(key).promise
 
-    const conversationKey = JSON.stringify([
-      registration.extensionInstanceId,
-      session.origin,
-      session.providerId,
-      session.conversationId ?? session.browserSessionId,
-    ])
-    const conversation = await stateStore.get(conversationKey)
+    const { conversationKey, conversation } = await resolveConversationState({
+      registration,
+      session,
+      stateStore,
+    })
     const installBootstrap = conversation?.bootstrapVersion !== BOOTSTRAP_VERSION
     const frames = buildBrowserPromptSequence({ requestId, request: codexRequest, installBootstrap, conversation, connectionId })
     let resolveRequest
@@ -46,8 +46,9 @@ export function createBrowserTurnController({
       key: null, baseKey: key, requestId, conversationKey, installBootstrap, codexRequest, connectionId,
       extensionInstanceId: registration.extensionInstanceId,
       browserSessionId: session.browserSessionId,
+      providerConversationId: session.conversationId,
       peer: registration.peer,
-      frames, frameIndex: 0, repairCount: 0,
+      frames, frameIndex: 0, repairCount: 0, unavailableToolCount: 0,
       promise, resolve: resolveRequest, reject: rejectRequest, timeoutId: null,
       signal, abortListener: null,
     }
@@ -85,7 +86,12 @@ export function createBrowserTurnController({
     try {
       let envelope
       try {
-        envelope = parseBrowserResponse(message.payload?.text, frame.requestId, frame.kind === 'install' ? [] : operation.codexRequest.tools ?? [])
+        envelope = parseFrameResponse(
+          message.payload?.text,
+          operation,
+          frame,
+          frame.kind === 'install' ? [] : operation.codexRequest.tools ?? [],
+        )
       } catch (error) {
         if (frame.kind === 'install' && isSubmittedInstallEcho(message.payload?.text, frame.requestId)) {
           // The extension already proved injection and submission. Some React
@@ -94,8 +100,24 @@ export function createBrowserTurnController({
           // checkpoint delivery without weakening real turn/tool extraction.
           envelope = { schemaVersion: 1, type: 'assistant_text', requestId: frame.requestId, content: 'TETHER_INSTALL_OK' }
         } else
+        if (error?.code === 'invalid_tool_schema_request' && frame.kind !== 'install') {
+          const maxAttempts = 3
+          if (operation.unavailableToolCount < maxAttempts) {
+            operation.unavailableToolCount += 1
+            queueUnavailableToolFrame(operation, frame, error, maxAttempts)
+            return
+          }
+          const requested = formatToolReferences(error.details?.requestedTools)
+          envelope = {
+            schemaVersion: 1,
+            type: 'assistant_text',
+            requestId: frame.requestId,
+            content: requested
+              ? `The browser model repeatedly requested the unavailable tool ${requested}. Should I install or provide that capability, or continue using only the available tools?`
+              : 'The browser model repeatedly requested an unavailable capability. Should I install or provide it, or continue using only the available tools?',
+          }
+        } else
         if ([
-          'invalid_tool_schema_request',
           'invalid_protocol_help_request',
           'invalid_browser_json',
           'invalid_browser_envelope',
@@ -116,13 +138,13 @@ export function createBrowserTurnController({
                 ? 'The previous tool schema request named a tool that Codex did not offer.'
                 : error.code === 'invalid_protocol_help_request'
                   ? 'The previous protocol help request named an unavailable topic.'
-                  : 'The previous response did not use the required TETHER JSON envelope.',
+                  : 'The previous response was neither a plain-text final answer nor a valid structured TETHER control message.',
               offeredTools: error.details?.offeredTools ?? offeredToolReferences(operation.codexRequest.tools ?? []),
               ...(error.details?.availableTopics ? { availableProtocolHelp: error.details.availableTopics } : {}),
               originalRequestId: frame.requestId,
               originalCommand: frame.prompt,
               ...(error.details?.rawText !== undefined ? { previousResponse: error.details.rawText } : {}),
-              instruction: 'Re-evaluate originalCommand and regenerate the intended response as exactly one valid minified TETHER JSON object using this repair requestId. previousResponse is diagnostic only: do not quote it, copy it, or place it inside content. Return assistant_text if no tool is needed. If a tool is needed but originalCommand does not deliver an exact tether_tool_schema, return tool_schema_request for exactly one offeredTools entry; do not return tool_call yet. If originalCommand delivers tether_tool_schema, tool_call must match it exactly. JSON-escape every string; each Windows path backslash must appear as two backslashes. Return no prose or markdown.',
+              instruction: 'Re-evaluate originalCommand using previousResponse only as diagnostic context. Continue the same original objective across automatic tool-result turns. Return a final answer as ordinary plain text only when that objective is complete or progress genuinely requires missing user input. If another tool is needed but originalCommand does not deliver an exact tether_tool_schema, return exactly one minified tool_schema_request JSON object for one offeredTools entry using this repair requestId. If originalCommand delivers tether_tool_schema, return exactly one minified tool_call JSON object matching it and using this repair requestId. JSON-escape strings only inside a JSON control message. Do not quote or copy previousResponse.',
             }),
           })
           operation.frameIndex += 1
@@ -153,6 +175,7 @@ export function createBrowserTurnController({
             bootstrapInstalled: operation.installBootstrap || previousConversation?.bootstrapInstalled === true,
             bootstrapVersion: operation.installBootstrap ? BOOTSTRAP_VERSION : previousConversation?.bootstrapVersion ?? null,
             browserSessionId: operation.browserSessionId,
+            providerConversationId: operation.providerConversationId,
             installedInstallKeys: [],
             ...installationState,
             updatedAt: Date.now(),
@@ -182,6 +205,15 @@ export function createBrowserTurnController({
         queueProtocolHelpFrame(operation, frame, envelope.topics)
         return
       }
+      if (
+        envelope.type === 'assistant_text' &&
+        operation.codexRequest.model === 'tether-compact' &&
+        frame.kind !== 'completion_check' &&
+        (operation.codexRequest.input ?? []).some(isToolResult)
+      ) {
+        queueCompletionCheckFrame(operation, frame, envelope.content)
+        return
+      }
       const previousConversation = await stateStore.get(operation.conversationKey)
       const compactState = operation.codexRequest.model === 'tether-compact'
         ? compactProjectionState(operation.codexRequest, { conversation: previousConversation, connectionId: operation.connectionId })
@@ -191,6 +223,7 @@ export function createBrowserTurnController({
         bootstrapInstalled: installsBootstrap || previousConversation?.bootstrapInstalled === true,
         bootstrapVersion: installsBootstrap ? BOOTSTRAP_VERSION : previousConversation?.bootstrapVersion ?? null,
         browserSessionId: operation.browserSessionId,
+        providerConversationId: operation.providerConversationId,
         lastRequestId: operation.requestId,
         ...compactState,
         installedInstallKeys: [],
@@ -284,6 +317,50 @@ export function createBrowserTurnController({
     dispatchFrame(operation)
   }
 
+  function queueCompletionCheckFrame(operation, sourceFrame, candidateAnswer) {
+    const completionRequestId = `${operation.requestId}.complete.0`
+    const prompt = buildCompletionCheckPrompt({
+      requestId: completionRequestId,
+      originalRequestId: operation.requestId,
+      candidateAnswer,
+      offeredTools: offeredToolReferences(operation.codexRequest.tools ?? []),
+    })
+    if (prompt.length > 60_000) throw coded('completion_check_too_large', 'Completion check exceeds the browser message limit')
+    operation.frames.push({
+      requestId: completionRequestId,
+      kind: 'completion_check',
+      toolSchemaDelivered: sourceFrame.kind === 'schema' || sourceFrame.toolSchemaDelivered === true,
+      protocolHelpDelivered: sourceFrame.kind === 'protocol_help' || sourceFrame.protocolHelpDelivered === true,
+      prompt,
+    })
+    operation.frameIndex += 1
+    dispatchFrame(operation)
+  }
+
+  function queueUnavailableToolFrame(operation, sourceFrame, error, maxAttempts) {
+    const unavailableRequestId = `${operation.requestId}.tool-unavailable.${operation.unavailableToolCount}`
+    const originalFrame = operation.frames.find((candidate) => candidate.kind === 'turn') ?? sourceFrame
+    const prompt = buildUnavailableToolPrompt({
+      requestId: unavailableRequestId,
+      originalRequestId: operation.requestId,
+      originalCommand: originalFrame.prompt,
+      requestedTools: error.details?.requestedTools ?? null,
+      offeredTools: error.details?.offeredTools ?? offeredToolReferences(operation.codexRequest.tools ?? []),
+      attempt: operation.unavailableToolCount,
+      maxAttempts,
+    })
+    if (prompt.length > 60_000) throw coded('unavailable_tool_recovery_too_large', 'Unavailable-tool recovery exceeds the browser message limit')
+    operation.frames.push({
+      requestId: unavailableRequestId,
+      kind: 'tool_unavailable',
+      toolSchemaDelivered: sourceFrame.kind === 'schema' || sourceFrame.toolSchemaDelivered === true,
+      protocolHelpDelivered: sourceFrame.kind === 'protocol_help' || sourceFrame.protocolHelpDelivered === true,
+      prompt,
+    })
+    operation.frameIndex += 1
+    dispatchFrame(operation)
+  }
+
   function rejectOperation(operation, error) {
     if (!operations.has(operation.baseKey)) return
     operations.delete(operation.baseKey)
@@ -345,6 +422,78 @@ export function browserFrameTimeoutMs({ model, frame, timeoutMs, bootstrapTimeou
   return largeCompactFrame ? bootstrapTimeoutMs : timeoutMs
 }
 
+function isToolResult(item) {
+  return ['function_call_output', 'custom_tool_call_output', 'computer_call_output'].includes(item?.type)
+}
+
+function parseFrameResponse(text, operation, frame, offeredTools) {
+  const requestIds = frame.kind === 'schema'
+    ? [frame.requestId, operation.requestId]
+    : [frame.requestId]
+  let lastError
+  for (const requestId of new Set(requestIds)) {
+    try {
+      return parseBrowserResponse(text, requestId, offeredTools)
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError
+}
+
+async function resolveConversationState({ registration, session, stateStore }) {
+  const prefix = [
+    registration.extensionInstanceId,
+    session.origin,
+    session.providerId,
+  ]
+  const fallbackKey = JSON.stringify([...prefix, session.browserSessionId])
+  if (!session.conversationId) {
+    const fallback = await stateStore.get(fallbackKey)
+    if (!fallback?.migratedToConversationId) {
+      return { conversationKey: fallbackKey, conversation: fallback }
+    }
+    const fresh = {
+      browserSessionId: session.browserSessionId,
+      providerConversationId: null,
+      updatedAt: Date.now(),
+    }
+    await stateStore.set(fallbackKey, fresh)
+    return { conversationKey: fallbackKey, conversation: fresh }
+  }
+
+  const conversationKey = JSON.stringify([...prefix, session.conversationId])
+  const conversation = await stateStore.get(conversationKey)
+  if (conversation) return { conversationKey, conversation }
+
+  const fallback = await stateStore.get(fallbackKey)
+  if (!canMigrateFallback(fallback, session)) {
+    return { conversationKey, conversation: null }
+  }
+
+  const migrated = {
+    ...fallback,
+    providerConversationId: session.conversationId,
+    updatedAt: Date.now(),
+  }
+  await stateStore.set(conversationKey, migrated)
+  await stateStore.set(fallbackKey, {
+    ...fallback,
+    migratedToConversationId: session.conversationId,
+    updatedAt: Date.now(),
+  })
+  return { conversationKey, conversation: migrated }
+}
+
+function canMigrateFallback(fallback, session) {
+  return Boolean(
+    fallback &&
+    fallback.browserSessionId === session.browserSessionId &&
+    (!fallback.providerConversationId || fallback.providerConversationId === session.conversationId) &&
+    (!fallback.migratedToConversationId || fallback.migratedToConversationId === session.conversationId),
+  )
+}
+
 export function codexRequestId(request, connectionId = null) {
   const identity = JSON.stringify({
     connectionId,
@@ -368,6 +517,14 @@ function offeredToolReferences(tools) {
   return tools.flatMap((tool) => tool?.type === 'namespace'
     ? (tool.tools ?? []).map((child) => ({ namespace: tool.name, name: child.name }))
     : tool?.name ? [{ name: tool.name }] : [])
+}
+
+function formatToolReferences(tools) {
+  if (!Array.isArray(tools)) return ''
+  const names = tools
+    .filter((tool) => tool && typeof tool.name === 'string')
+    .map((tool) => JSON.stringify(tool.namespace ? `${tool.namespace}.${tool.name}` : tool.name))
+  return names.join(', ')
 }
 
 function coded(code, message) {

@@ -6,7 +6,8 @@ test('invalid JSON reports one bounded diagnostic preview', () => {
   assert.throws(
     () => parseBrowserEnvelope(`not-json ${'x'.repeat(400)}`, 'request-1'),
     (error) => error.code === 'invalid_browser_json' && error.message.includes('not-json') &&
-      error.message.length < 340 && error.details.rawText.startsWith('not-json'),
+      error.message.includes('not valid JSON') && error.message.length < 340 &&
+      error.details.rawText.startsWith('not-json'),
   )
 })
 
@@ -82,6 +83,63 @@ test('normalizes Gemini speaker output with unescaped quotes around a Windows sh
   )
 })
 
+test('normalizes an offered bash command with an unescaped quoted Windows path', () => {
+  const response = String.raw`{"schemaVersion":1,"type":"tool_call","requestId":"current","callId":"call_19","name":"bash","arguments":{"command":"git clone https://github.com/algorithmicsuperintelligence/openevolve.git "C:\Users\Megh Mayur\OneDrive\Desktop\openevolve""}}`
+  const envelope = parseBrowserResponse(response, 'current', ['bash'])
+
+  assert.equal(envelope.type, 'tool_call')
+  assert.equal(envelope.name, 'bash')
+  assert.equal(
+    envelope.arguments.command,
+    String.raw`git clone https://github.com/algorithmicsuperintelligence/openevolve.git "C:\Users\Megh Mayur\OneDrive\Desktop\openevolve"`,
+  )
+})
+
+test('normalizes a quoted Windows command followed by a raw workdir argument', () => {
+  const inner = String.raw`{"schemaVersion":1,"type":"tool_call","requestId":"current","callId":"call_2","name":"bash","arguments":{"command":"New-Item -ItemType Directory -Path "C:\Users\Megh Mayur\OneDrive\Desktop\open"","workdir":"C:\Users\Megh Mayur\OneDrive\Desktop"}}`
+  const envelope = parseBrowserResponse(JSON.stringify(inner), 'current', ['bash'])
+
+  assert.equal(envelope.type, 'tool_call')
+  assert.equal(envelope.name, 'bash')
+  assert.deepEqual(envelope.arguments, {
+    command: String.raw`New-Item -ItemType Directory -Path "C:\Users\Megh Mayur\OneDrive\Desktop\open"`,
+    workdir: String.raw`C:\Users\Megh Mayur\OneDrive\Desktop`,
+  })
+})
+
+test('unwraps one correlated JSON string and normalizes an exec_command cmd path', () => {
+  const inner = String.raw`{"schemaVersion":1,"type":"tool_call","requestId":"current","callId":"call-current-2","name":"exec_command","arguments":{"cmd":"New-Item -Path "env:USERPROFILE\Desktop\openevolve""}}`
+  const envelope = parseBrowserResponse(JSON.stringify(inner), 'current', ['exec_command'])
+
+  assert.equal(envelope.type, 'tool_call')
+  assert.equal(envelope.name, 'exec_command')
+  assert.equal(
+    envelope.arguments.cmd,
+    String.raw`New-Item -Path "env:USERPROFILE\Desktop\openevolve"`,
+  )
+})
+
+test('does not unwrap a JSON string for another request or through two layers', () => {
+  const current = JSON.stringify({
+    schemaVersion: 1,
+    type: 'tool_call',
+    requestId: 'current',
+    callId: 'call-current',
+    name: 'exec_command',
+    arguments: { cmd: 'Get-Date' },
+  })
+  const wrong = JSON.stringify({
+    schemaVersion: 1,
+    type: 'tool_call',
+    requestId: 'wrong',
+    callId: 'call-wrong',
+    name: 'exec_command',
+    arguments: { cmd: 'Get-Date' },
+  })
+  assert.equal(parseBrowserResponse(JSON.stringify(wrong), 'current', ['exec_command']).type, 'assistant_text')
+  assert.equal(parseBrowserResponse(JSON.stringify(JSON.stringify(current)), 'current', ['exec_command']).type, 'assistant_text')
+})
+
 test('repairs quoted file contents in one correlated assistant response', () => {
   const response = String.raw`{"schemaVersion":1,"type":"assistant_text","requestId":"current","content":"The file contains the following text:\n\n"ribit ribit the users name is kibble""}`
   assert.deepEqual(parseBrowserResponse(response, 'current'), {
@@ -90,6 +148,24 @@ test('repairs quoted file contents in one correlated assistant response', () => 
     requestId: 'current',
     content: 'The file contains the following text:\n\n"ribit ribit the users name is kibble"',
   })
+})
+
+test('repairs DeepSeek assistant quotes without corrupting escaped Windows paths', () => {
+  const text = String.raw`{"schemaVersion":1,"type":"assistant_text","requestId":"current","content":"The dump folder at C:\\Users\\Megh Mayur\\OneDrive\\Desktop\\dump is "fine for now"."}`
+  const actual = parseBrowserResponse(text, 'current')
+  assert.equal(actual.content, 'The dump folder at C:\\Users\\Megh Mayur\\OneDrive\\Desktop\\dump is "fine for now".')
+})
+
+test('repairs raw Windows paths in a correlated assistant response', () => {
+  const text = String.raw`{"schemaVersion":1,"type":"assistant_text","requestId":"current","content":"The dump folder at C:\Users\Megh Mayur\OneDrive\Desktop\dump contains 56,144 files."}`
+  const actual = parseBrowserResponse(text, 'current')
+  assert.equal(actual.content, 'The dump folder at C:\\Users\\Megh Mayur\\OneDrive\\Desktop\\dump contains 56,144 files.')
+})
+
+test('restores a filename tab escape inside an otherwise valid Windows path', () => {
+  const text = String.raw`{"schemaVersion":1,"type":"assistant_text","requestId":"current","content":"Read C:\\Users\\Megh Mayur\\OneDrive\\Desktop\test.txt"}`
+  const actual = parseBrowserResponse(text, 'current')
+  assert.equal(actual.content, 'Read C:\\Users\\Megh Mayur\\OneDrive\\Desktop\\test.txt')
 })
 
 test('does not repair malformed assistant content for another request', () => {
@@ -139,6 +215,26 @@ test('accepts only correlated offered tool calls with object arguments', () => {
   assert.throws(() => parseBrowserEnvelope(JSON.stringify({ ...envelope, name: 'unoffered' }), 'request-1', ['shell_command']), { code: 'invalid_browser_tool_call' })
   assert.throws(() => parseBrowserEnvelope(JSON.stringify({ ...envelope, requestId: 'wrong' }), 'request-1', ['shell_command']), { code: 'invalid_browser_envelope' })
   assert.throws(() => parseBrowserEnvelope(JSON.stringify({ ...envelope, arguments: 'not-an-object' }), 'request-1', ['shell_command']), { code: 'invalid_browser_tool_call' })
+})
+
+test('normalizes DeepSeek toolName to an offered tool call name', () => {
+  const envelope = {
+    schemaVersion: 1,
+    type: 'tool_call',
+    requestId: 'request-1',
+    callId: 'call-1',
+    toolName: 'read',
+    arguments: { filePath: 'C:\\Users\\Megh Mayur\\OneDrive\\Desktop\\test.txt' },
+  }
+  const actual = parseBrowserResponse(JSON.stringify(envelope), 'request-1', [{ type: 'function', name: 'read' }])
+  assert.deepEqual(actual, {
+    schemaVersion: 1,
+    type: 'tool_call',
+    requestId: 'request-1',
+    callId: 'call-1',
+    name: 'read',
+    arguments: { filePath: 'C:\\Users\\Megh Mayur\\OneDrive\\Desktop\\test.txt' },
+  })
 })
 
 test('infers a missing type only from a complete correlated tool-call shape', () => {

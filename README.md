@@ -190,6 +190,35 @@ After saving the provider, select **TETHER Browser** and send a normal prompt.
 The request travels from OpenCode to the local companion, through the paired
 extension, and into the one XposE-owned browser tab.
 
+#### Launch the Codex desktop app with TETHER
+
+Keep `tether xpose` running and the browser endpoint activated, then run:
+
+```powershell
+tether launch codex-app
+```
+
+Pass a workspace path to open a specific project:
+
+```powershell
+tether launch codex-app "C:\path\to\project"
+```
+
+The launcher backs up `~/.codex/config.toml`, activates a minimal
+**TETHER Browser** configuration, and opens the Codex desktop app. The XposE API
+key remains in `~/.tether/state/xpose-api-token`; Codex reads it through a local
+credential helper instead of copying it into `config.toml`.
+
+To restore the previous Codex configuration and reopen the desktop app:
+
+```powershell
+tether launch codex-app --restore
+```
+
+The backup is kept under `~/.tether/state/codex-app` while TETHER GUI mode is
+active. If the temporary Codex config is edited, restore preserves that edited
+copy before reinstating the original.
+
 #### Verify the endpoint directly
 
 ```powershell
@@ -266,7 +295,6 @@ The current extension suite covers tab lifecycle, session identity, calibration,
 | `adapter/` | Local Responses adapter and browser-turn protocol. |
 | `extension/src/` | React side panel, MV3 background worker, and content automation. |
 | `extension/dist/` | Production extension loaded through **Load unpacked** and included in the npm package. |
-| `codex-cli/` | Upstream Codex source snapshot retained for investigation and compatibility work. |
 
 ## Security and privacy notes
 

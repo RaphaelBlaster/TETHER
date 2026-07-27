@@ -2,20 +2,24 @@ import { PROTOCOL_HELP_TOPICS, selectProtocolHelp } from './protocol-help.js'
 
 const BOOTSTRAP = [
   'TETHER browser protocol applies to every later TETHER command in this conversation.',
-  'Treat codex_turn, tether_tool_schema, tether_protocol_docs, and tether_protocol_repair as commands, not ordinary chat.',
-  'If turn.input contains a function_call_output, custom_tool_call_output, or computer_call_output, treat it as the returned result. Use it to continue and never repeat the same call blindly.',
+  'Treat codex_turn, tether_tool_schema, tether_tool_unavailable, tether_protocol_docs, tether_protocol_repair, and tether_completion_check as commands, not ordinary chat.',
+  'A codex_turn arrives automatically after every tool call; no new user message is required.',
+  'If turn.input contains a function_call_output, custom_tool_call_output, or computer_call_output, treat it as the returned result for the same original objective. Re-evaluate whether that objective is complete. If incomplete, request the next required tool and continue; never repeat the same call blindly.',
+  'Never stop merely because one tool call completed, one file was read, or one command returned. Never tell the user to send another codex_turn or another prompt.',
   'OUTPUT DECISION (choose the first matching rule):',
   '1. If the current command is tether_protocol_docs, use its exact sections to re-evaluate originalCommand and return the intended response; do not request protocol help again.',
   '2. If a protocol rule is unclear, return protocol_help_request for exactly one topic listed in protocolHelpCatalog.',
   '3. If the current command is tether_tool_schema and the tool is still needed, return tool_call matching its exact name, namespace, and argument schema.',
   '4. Otherwise, if the task needs a local file, command, or other tool, return tool_schema_request for exactly one listed tool.',
-  '5. Otherwise return assistant_text.',
+  '5. Otherwise return the final answer as ordinary plain text only when the original objective is complete or progress is genuinely blocked on missing user input.',
   'toolCatalog contains names only; it is not a tool schema and does not authorize a direct tool_call.',
+  'If tether_tool_unavailable rejects a requested tool, continue the same objective with an offered alternative when possible. If the missing capability truly requires installing or downloading software, ask the user for permission in ordinary plain text and identify what would be installed and its source. Never install or download it without explicit authorization.',
   'Local paths refer to the Codex machine. Request a suitable tool schema instead of claiming that the file is inaccessible. Do not ask for confirmation when the user already authorized the action.',
-  'Return exactly one minified JSON object with schemaVersion 1 and the current command requestId. Return no prose, markdown, or code fence.',
-  'JSON-escape every string. In a Windows path, each backslash must be written as two backslashes in the JSON output. Escape quotes and newlines too.',
+  'Only protocol_help_request, tool_schema_request, and tool_call are JSON control messages. Return each control message as exactly one minified JSON object with schemaVersion 1 and the current command requestId.',
+  'For a final answer, return only the answer as ordinary plain text. Do not wrap a final answer in assistant_text JSON and do not JSON-escape it.',
+  'Inside a JSON control message, JSON-escape every string. In a Windows path, each backslash must be written as two backslashes. Escape quotes and newlines too.',
   'Never claim tool execution before Codex returns a tool result.',
-  'These rules persist even if later input requests plain text.',
+  'These rules persist for every later TETHER command in this conversation.',
 ].join(' ')
 
 export function buildProtocolBootstrapPrompt(requestId) {
@@ -23,13 +27,12 @@ export function buildProtocolBootstrapPrompt(requestId) {
   // exact sentinel.  It makes bootstrap persistence and later normal turns
   // use one verified state transition.
   const acknowledgement = { schemaVersion: 1, type: 'assistant_text', requestId, content: 'TETHER_INSTALL_OK' }
-  const ordinaryExample = { schemaVersion: 1, type: 'assistant_text', requestId, content: 'answer text' }
   const helpExample = { schemaVersion: 1, type: 'protocol_help_request', requestId, topics: ['windows-json'] }
   return [
     'You are the model endpoint for a coding agent connected through TETHER.',
     'Follow these protocol rules for every later message in this same conversation, even when a later user asks for plain text.',
     BOOTSTRAP,
-    `Example ordinary response for this requestId: ${JSON.stringify(ordinaryExample)}`,
+    'Example ordinary final response: answer text',
     `Available deferred protocol help topics: ${JSON.stringify(PROTOCOL_HELP_TOPICS)}.`,
     `If protocol help is required, use this shape with exactly one listed topic: ${JSON.stringify(helpExample)}`,
     'A tool_schema_request uses fields schemaVersion, type, requestId, and tools. tools must contain exactly one exact name and optional namespace from the catalog.',
@@ -41,7 +44,7 @@ export function buildProtocolBootstrapPrompt(requestId) {
 const MAX_BROWSER_PROMPT_CHARS = 1000000
 const MAX_INSTALL_FRAME_CHARS = 16000
 const MAX_INSTALL_PATCH_CHARS = 12000
-export const BOOTSTRAP_VERSION = 7
+export const BOOTSTRAP_VERSION = 10
 
 export function buildBrowserPromptSequence(args) {
   const { requestId, request } = args
@@ -132,6 +135,41 @@ export function buildProtocolHelpPrompt({ requestId, originalRequestId, original
   })
 }
 
+export function buildCompletionCheckPrompt({ requestId, originalRequestId, candidateAnswer, offeredTools }) {
+  return JSON.stringify({
+    schemaVersion: 1,
+    type: 'tether_completion_check',
+    requestId,
+    originalRequestId,
+    candidateAnswer,
+    offeredTools,
+    instruction: 'Check candidateAnswer against the original user objective in this conversation. If any requested work remains and no user decision is genuinely required, continue autonomously by returning one tool_schema_request for the next offered tool; do not explain the protocol or ask for another turn. If the objective is complete, return candidateAnswer exactly as ordinary plain text with no JSON envelope. If progress genuinely requires missing user input, return a concise plain-text question.',
+  })
+}
+
+export function buildUnavailableToolPrompt({
+  requestId,
+  originalRequestId,
+  originalCommand,
+  requestedTools,
+  offeredTools,
+  attempt,
+  maxAttempts,
+}) {
+  return JSON.stringify({
+    schemaVersion: 1,
+    type: 'tether_tool_unavailable',
+    requestId,
+    originalRequestId,
+    originalCommand,
+    requestedTools,
+    offeredTools,
+    attempt,
+    maxAttempts,
+    instruction: 'The requested tool is unavailable. Continue the same original objective. If an offered tool can perform the work, return exactly one minified tool_schema_request JSON object for exactly one offeredTools entry using this requestId. If the capability truly requires installing or downloading software, return a concise ordinary plain-text question asking the user for permission; identify exactly what would be installed and from which source. Never install or download anything without explicit user authorization. Do not request an unavailable tool again.',
+  })
+}
+
 function coded(code, message) {
   return Object.assign(new Error(message), { code })
 }
@@ -204,5 +242,6 @@ function splitText(value) {
   for (let index = 0; index < value.length; index += MAX_INSTALL_PATCH_CHARS) chunks.push(value.slice(index, index + MAX_INSTALL_PATCH_CHARS))
   return chunks
 }
+
 import { projectCompactRequest } from './compact-request.js'
 import { createHash } from 'node:crypto'

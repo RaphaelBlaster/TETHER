@@ -11,8 +11,13 @@ export function parseBrowserEnvelope(text, requestId, offeredTools = []) {
   const parsed = parseJsonObjects(text).map(inferEnvelopeType)
   const matching = parsed.filter((value) => isObject(value) && value.requestId === requestId &&
     ENVELOPE_TYPES.includes(value.type))
+  if (parsed.length === 0) {
+    throw coded('invalid_browser_json', `Browser response is not valid JSON (received: ${preview(text)})`, {
+      rawText: boundedRawText(text),
+    })
+  }
   if (parsed.length !== 1 && matching.length !== 1) {
-    throw coded('invalid_browser_json', `Browser response must be exactly one JSON object (received: ${preview(text)})`, {
+    throw coded('invalid_browser_json', `Browser response contains multiple JSON objects and no unique current response (received: ${preview(text)})`, {
       rawText: boundedRawText(text),
     })
   }
@@ -37,7 +42,8 @@ export function parseBrowserEnvelope(text, requestId, offeredTools = []) {
       !envelope.content.trim() ||
       Object.keys(envelope).some((key) => !['schemaVersion', 'type', 'requestId', 'content'].includes(key))
     ) throw coded('invalid_browser_envelope', 'Browser response does not match the assistant_text schema')
-    return envelope
+    const content = restoreWindowsPathTabs(envelope.content)
+    return content === envelope.content ? envelope : { ...envelope, content }
   }
   if (envelope.type === 'tool_call') {
     if (
@@ -85,8 +91,9 @@ export function parseBrowserEnvelope(text, requestId, offeredTools = []) {
 // can be translated losslessly. JSON-looking output stays on the strict path so
 // malformed or invented tool calls are never accepted as assistant text.
 export function parseBrowserResponse(text, requestId, offeredTools = []) {
-  const normalized = String(text ?? '').trim()
-  if (!normalized) throw coded('invalid_browser_json', 'Browser response was empty')
+  const rawNormalized = String(text ?? '').trim()
+  if (!rawNormalized) throw coded('invalid_browser_json', 'Browser response was empty')
+  const normalized = unwrapCorrelatedJsonString(rawNormalized, requestId)
   const hasSpeakerPrefix = /^[^{}\r\n]{1,80}\b(?:said|says)\s+(?=\{)/i.test(normalized)
   const protocolText = hasSpeakerPrefix ? normalized.slice(normalized.indexOf('{')) : normalized
   const standaloneCorrelatedToolCall =
@@ -101,7 +108,9 @@ export function parseBrowserResponse(text, requestId, offeredTools = []) {
     new RegExp(`"requestId"\\s*:\\s*${escapeRegExp(JSON.stringify(requestId))}`).test(protocolText)
   const repairedProtocolText = standaloneCorrelatedAssistantText
     ? repairQuotedAssistantText(protocolText) ?? protocolText
-    : protocolText
+    : standaloneCorrelatedToolCall
+      ? repairQuotedCommandArgument(protocolText) ?? protocolText
+      : protocolText
   // Some providers render a small speaker prefix (for example, "Gemini said")
   // before an otherwise valid protocol object.  Accept only a uniquely
   // correlated object; never parse an arbitrary JSON fragment as a tool call.
@@ -133,10 +142,14 @@ export function parseBrowserResponse(text, requestId, offeredTools = []) {
 function inferEnvelopeType(value) {
   if (!isObject(value)) return value
   let normalized = value
-  if (value.type === undefined && typeof value.callId === 'string' && typeof value.name === 'string' && isObject(value.arguments)) {
-    normalized = { ...value, type: 'tool_call' }
-  } else if (value.type === undefined && typeof value.content === 'string') {
-    normalized = { ...value, type: 'assistant_text' }
+  if (normalized.type === 'tool_call' && normalized.name === undefined && typeof normalized.toolName === 'string') {
+    const { toolName, ...rest } = normalized
+    normalized = { ...rest, name: toolName }
+  }
+  if (normalized.type === undefined && typeof normalized.callId === 'string' && typeof normalized.name === 'string' && isObject(normalized.arguments)) {
+    normalized = { ...normalized, type: 'tool_call' }
+  } else if (normalized.type === undefined && typeof normalized.content === 'string') {
+    normalized = { ...normalized, type: 'assistant_text' }
   }
   return ['tool_call', 'assistant_text'].includes(normalized.type) && normalized.schemaVersion === undefined
     ? { schemaVersion: 1, ...normalized }
@@ -167,15 +180,25 @@ function parseJsonObjects(value, { repairToolCallBackslashes = false } = {}) {
           values.push(JSON.parse(candidate))
         } catch {
           if (repairToolCallBackslashes && /"type"\s*:\s*"tool_call"/.test(candidate)) {
-            const repairedCommand = repairQuotedShellCommand(candidate)
+            try {
+              values.push(JSON.parse(escapeRawBackslashesInJsonStrings(candidate)))
+              start = end
+              break
+            } catch {}
+            const repairedCommand = repairQuotedCommandArgument(candidate)
             if (repairedCommand) {
               try {
                 values.push(JSON.parse(repairedCommand))
                 start = end
                 break
-              } catch {}
+              } catch {
+                try {
+                  values.push(JSON.parse(escapeRawBackslashesInJsonStrings(repairedCommand)))
+                  start = end
+                  break
+                } catch {}
+              }
             }
-            try { values.push(JSON.parse(escapeRawBackslashesInJsonStrings(candidate))) } catch {}
           }
         }
         start = end
@@ -186,23 +209,43 @@ function parseJsonObjects(value, { repairToolCallBackslashes = false } = {}) {
   return values
 }
 
-// Some consumer UIs prefix the model name and expose a shell command whose
-// quoted Windows path was not JSON-escaped. Repair only the command value of a
-// shell_command tool call; JSON.stringify preserves the exact command while
-// escaping its quotes and path separators. Offered-tool validation still runs
-// before the envelope can be accepted or executed.
-function repairQuotedShellCommand(value) {
-  if (!/"name"\s*:\s*"shell_command"/.test(value)) return null
-  const commandStart = /"arguments"\s*:\s*\{\s*"command"\s*:\s*"/.exec(value)
+// Consumer models can expose a command argument whose quoted Windows path was
+// not JSON-escaped. Repair only arguments.command or arguments.cmd on one
+// correlated tool_call; JSON.stringify preserves the exact command while
+// escaping quotes and separators. Exact offered-tool validation still runs
+// before execution.
+function repairQuotedCommandArgument(value) {
+  const commandStart = /"arguments"\s*:\s*\{\s*"(?:command|cmd)"\s*:\s*"/.exec(value)
   if (!commandStart) return null
   const openingQuote = commandStart.index + commandStart[0].length - 1
   const remainder = value.slice(openingQuote + 1)
-  const commandEnd = /"\s*}\s*}\s*$/.exec(remainder)
+  const commandEnd = /"(?=\s*(?:,\s*"[^"]+"\s*:|}\s*}\s*$))/.exec(remainder)
   if (!commandEnd) return null
   const closingQuote = openingQuote + 1 + commandEnd.index
   const command = value.slice(openingQuote + 1, closingQuote)
   if (!command.includes('"')) return null
   return `${value.slice(0, openingQuote)}${JSON.stringify(command)}${value.slice(closingQuote + 1)}`
+}
+
+// DeepSeek can render the complete envelope as one JSON string instead of as a
+// JSON object. Decode exactly one layer only when the decoded value is a
+// standalone object carrying the current requestId. The normal strict schema
+// and offered-tool checks still run after this normalization.
+function unwrapCorrelatedJsonString(value, requestId) {
+  if (!value.startsWith('"') || !value.endsWith('"')) return value
+  let decoded
+  try {
+    decoded = JSON.parse(value)
+  } catch {
+    return value
+  }
+  if (typeof decoded !== 'string') return value
+  const normalized = decoded.trim()
+  if (!normalized.startsWith('{') || !normalized.endsWith('}')) return value
+  const correlated = new RegExp(
+    `"requestId"\\s*:\\s*${escapeRegExp(JSON.stringify(requestId))}`,
+  ).test(normalized)
+  return correlated ? normalized : value
 }
 
 // A provider can quote a tool result inside assistant_text.content without
@@ -223,7 +266,6 @@ function repairQuotedAssistantText(value) {
   if (!contentEnd) return null
   const closingQuote = openingQuote + 1 + contentEnd.index
   const content = value.slice(openingQuote + 1, closingQuote)
-  if (!content.includes('"')) return null
   return `${value.slice(0, openingQuote + 1)}${escapeJsonStringContent(content)}${value.slice(closingQuote)}`
 }
 
@@ -238,7 +280,12 @@ function escapeJsonStringContent(value) {
     if (character === '\\') {
       const next = value[index + 1]
       const validUnicodeEscape = next === 'u' && /^[0-9a-fA-F]{4}$/.test(value.slice(index + 2, index + 6))
-      if (!validUnicodeEscape && !['"', '\\', '/', 'b', 'f', 'n', 'r', 't'].includes(next)) result += '\\'
+      if (['"', '\\', '/'].includes(next)) {
+        result += `${character}${next}`
+        index += 1
+        continue
+      }
+      if (!validUnicodeEscape && !['b', 'f', 'n', 'r', 't'].includes(next)) result += '\\'
       result += character
       continue
     }
@@ -246,6 +293,10 @@ function escapeJsonStringContent(value) {
     result += encoded.slice(1, -1)
   }
   return result
+}
+
+function restoreWindowsPathTabs(value) {
+  return value.replace(/([A-Za-z]:\\[^\r\n]*)\t(?=[A-Za-z0-9_.-])/g, '$1\\t')
 }
 
 // Consumer model UIs sometimes render a Windows command with single path
@@ -266,7 +317,12 @@ function escapeRawBackslashesInJsonStrings(value) {
     }
     if (quoted && character === '\\') {
       const next = value[index + 1]
-      if (!['"', '\\', '/'].includes(next)) result += '\\'
+      if (['"', '\\', '/'].includes(next)) {
+        result += `${character}${next}`
+        index += 1
+        continue
+      }
+      result += '\\'
     }
     result += character
   }

@@ -2,7 +2,6 @@ $ErrorActionPreference = 'Stop'
 
 $adapterRoot = Split-Path -Parent $PSScriptRoot
 $suiteRoot = Split-Path -Parent $adapterRoot
-$codexRoot = Join-Path $suiteRoot 'codex-cli'
 $adapterProcess = $null
 
 function Test-TetherAdapterListening {
@@ -37,7 +36,7 @@ if (-not (Test-TetherAdapterListening)) {
 
 try {
   & codex `
-    -C $codexRoot `
+    -C $suiteRoot `
     -m tether-compact `
     -c 'model_provider="tether"' `
     -c 'model_providers.tether.name="TETHER local adapter"' `

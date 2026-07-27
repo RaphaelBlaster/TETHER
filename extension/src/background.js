@@ -14,7 +14,7 @@ import { createTabPanelController } from './tab-panel-controller.js'
 import { createInjectionCoordinator } from './injection/injection-coordinator.js'
 import { createExtractionCoordinator } from './extraction/extraction-coordinator.js'
 import { createBrowserAutomation } from './automation/browser-automation.js'
-import { createDebuggerTransport } from './automation/debugger-transport.js'
+import { createPuppeteerTabDriver } from './automation/puppeteer-tab-driver.js'
 import { getOrCreateExtensionInstanceId, getOrCreateExtensionPairingToken } from './extension-protocol.js'
 import { shouldCancelTabOperations, shouldReleaseBrowserAutomation } from './navigation-policy.js'
 import { ensureTetherContentScript } from './content-script-lifecycle.js'
@@ -162,7 +162,7 @@ const selectorRequests = createSelectorRequestClient({
 // pipeline that proved reliable in the replacement extension. It does not
 // depend on the legacy content-script selector/extraction flow.
 const browserAutomation = createBrowserAutomation({
-  transport: createDebuggerTransport(),
+  driver: createPuppeteerTabDriver(),
   calibrationStore: { get: async (origin) => (await loadCalibrationProfiles())[origin] ?? null },
   adapterRegistry: providerAdapters,
 })

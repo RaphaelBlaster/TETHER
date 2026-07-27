@@ -291,8 +291,11 @@ export function buildDiscoveryScript({
       const id = el.id || '';
       const text = (el.innerText || el.textContent || '').trim().slice(0, 40);
       const nameBlob = (ariaLabel + ' ' + title + ' ' + id + ' ' + text).toLowerCase();
+      const className = typeof el.className === 'string' ? el.className : '';
       const disabled =
-        el.disabled === true || el.getAttribute('aria-disabled') === 'true';
+        el.disabled === true ||
+        el.getAttribute('aria-disabled') === 'true' ||
+        (' ' + className + ' ').includes(' ds-button--disabled ');
       return {
         index,
         tag: el.tagName,
@@ -480,7 +483,11 @@ export function buildActionabilityScript({ composerFp, sendFp, composerSelector,
     function info(el) {
       if (!el) return null;
       const r = el.getBoundingClientRect();
-      const disabled = el.disabled === true || el.getAttribute('aria-disabled') === 'true';
+      const className = typeof el.className === 'string' ? el.className : '';
+      const disabled =
+        el.disabled === true ||
+        el.getAttribute('aria-disabled') === 'true' ||
+        (' ' + className + ' ').includes(' ds-button--disabled ');
       return {
         connected: el.isConnected,
         visible: isVisible(el),
