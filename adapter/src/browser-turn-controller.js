@@ -10,6 +10,7 @@ import {
 } from './browser-prompt.js'
 import { parseBrowserResponse } from './browser-envelope.js'
 import { compactInstallationState, compactProjectionState, selectDeferredToolDefinitions } from './compact-request.js'
+import { finalizeWebToolTurn, prepareWebToolTurn } from './web-tool-bridge.js'
 
 export function createBrowserTurnController({
   registry,
@@ -19,6 +20,7 @@ export function createBrowserTurnController({
   timeoutMs = 120000,
   bootstrapTimeoutMs = 300000,
   maxSettled = 128,
+  logger = console,
 } = {}) {
   const pending = new Map()
   const operations = new Map()
@@ -37,8 +39,40 @@ export function createBrowserTurnController({
       session,
       stateStore,
     })
-    const installBootstrap = conversation?.bootstrapVersion !== BOOTSTRAP_VERSION
-    const frames = buildBrowserPromptSequence({ requestId, request: codexRequest, installBootstrap, conversation, connectionId })
+    const webToolPrepared = codexRequest.model === 'tether-tool-bridge'
+      ? prepareWebToolTurn({
+          request: codexRequest,
+          conversation,
+          providerId: session.providerId,
+        })
+      : null
+    if (webToolPrepared) {
+      logWebToolStage(logger, 'prepared', {
+        sessionId: webToolPrepared.sessionState.sessionId,
+        browserConversationId: session.conversationId,
+        provider: session.providerId,
+        turnType: webToolPrepared.turnType,
+        toolsHash: webToolPrepared.sessionState.toolsHash,
+        pendingCalls: webToolPrepared.sessionState.pendingCalls.length,
+        completedCalls: webToolPrepared.sessionState.completedCalls.length,
+      })
+    }
+    if (webToolPrepared?.cachedEnvelope) return webToolPrepared.cachedEnvelope
+    const installBootstrap = codexRequest.model !== 'tether-tool-bridge' &&
+      conversation?.bootstrapVersion !== BOOTSTRAP_VERSION
+    const frames = webToolPrepared
+      ? [{
+          requestId,
+          kind: 'web_tool_turn',
+          prompt: webToolPrepared.prompt,
+        }]
+      : buildBrowserPromptSequence({
+          requestId,
+          request: codexRequest,
+          installBootstrap,
+          conversation,
+          connectionId,
+        })
     let resolveRequest
     let rejectRequest
     const promise = new Promise((resolve, reject) => { resolveRequest = resolve; rejectRequest = reject })
@@ -47,8 +81,10 @@ export function createBrowserTurnController({
       extensionInstanceId: registration.extensionInstanceId,
       browserSessionId: session.browserSessionId,
       providerConversationId: session.conversationId,
+      providerId: session.providerId,
       peer: registration.peer,
       frames, frameIndex: 0, repairCount: 0, unavailableToolCount: 0,
+      webToolPrepared,
       promise, resolve: resolveRequest, reject: rejectRequest, timeoutId: null,
       signal, abortListener: null,
     }
@@ -84,6 +120,65 @@ export function createBrowserTurnController({
       }
     }
     try {
+      if (frame.kind === 'web_tool_turn' || frame.kind === 'web_tool_retry') {
+        const finalized = finalizeWebToolTurn({
+          text: message.payload?.text,
+          providerId: operation.providerId,
+          requestId: operation.requestId,
+          prepared: operation.webToolPrepared,
+          providerMessageId: message.payload?.providerMessageId ?? null,
+        })
+        const previousConversation = await stateStore.get(operation.conversationKey)
+        await stateStore.set(operation.conversationKey, {
+          ...previousConversation,
+          browserSessionId: operation.browserSessionId,
+          providerConversationId: operation.providerConversationId,
+          webToolSession: finalized.sessionState,
+          updatedAt: Date.now(),
+        })
+        if (finalized.retryPrompt) {
+          logWebToolStage(logger, 'duplicate_suppressed', {
+            sessionId: finalized.sessionState.sessionId,
+            browserConversationId: operation.providerConversationId,
+            provider: operation.providerId,
+            responseHash: finalized.sessionState.lastProcessedResponse,
+            duplicates: finalized.duplicateCompleted.length,
+            retryCount: finalized.sessionState.retryCount,
+          })
+          if (frame.kind === 'web_tool_retry' || finalized.sessionState.retryCount > 1) {
+            throw coded('duplicate_browser_tool_call', 'Browser repeated an already completed tool call')
+          }
+          const retryRequestId = `${operation.requestId}.dedupe.1`
+          operation.webToolPrepared = {
+            ...operation.webToolPrepared,
+            deliveredToolResults: [],
+            sessionState: finalized.sessionState,
+          }
+          operation.frames.push({
+            requestId: retryRequestId,
+            kind: 'web_tool_retry',
+            prompt: finalized.retryPrompt,
+          })
+          operation.frameIndex += 1
+          dispatchFrame(operation)
+          return
+        }
+        logWebToolStage(logger, 'completed', {
+          sessionId: finalized.sessionState.sessionId,
+          browserConversationId: operation.providerConversationId,
+          provider: operation.providerId,
+          responseHash: finalized.sessionState.lastProcessedResponse,
+          outputType: finalized.envelope.type,
+          toolCalls: finalized.envelope.calls?.length ?? 0,
+          pendingCalls: finalized.sessionState.pendingCalls.length,
+          completedCalls: finalized.sessionState.completedCalls.length,
+        })
+        remember(settled, operation.baseKey, finalized.envelope, maxSettled)
+        operations.delete(operation.baseKey)
+        cleanupOperation(operation)
+        operation.resolve(finalized.envelope)
+        return
+      }
       let envelope
       try {
         envelope = parseFrameResponse(
@@ -511,6 +606,14 @@ function correlationKey(extensionInstanceId, browserSessionId, requestId) {
 function remember(map, key, value, limit) {
   map.set(key, value)
   while (map.size > limit) map.delete(map.keys().next().value)
+}
+
+function logWebToolStage(logger, stage, details) {
+  logger.info?.(JSON.stringify({
+    component: 'tether-web-tool-bridge',
+    stage,
+    ...details,
+  }))
 }
 
 function offeredToolReferences(tools) {

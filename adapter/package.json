@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/cli.js",
-    "test": "node --test"
+    "test": "node --test",
+    "compare:tools": "node scripts/compare-tool-proxies.mjs"
   },
   "dependencies": {
     "playwright-core": "^1.61.1",

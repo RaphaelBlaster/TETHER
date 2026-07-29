@@ -20,6 +20,8 @@ export { MAX_MESSAGE_SIZE }
 
 const DEFAULT_RETRY_DELAYS = [500, 1000, 2000, 4000, 10000]
 const MAX_SETTLED_REQUESTS = 128
+const INVALID_MESSAGE_CLOSE_CODE = 4002
+const REGISTRATION_FAILED_CLOSE_CODE = 4011
 
 export function createConnectionManager({
   url = 'ws://127.0.0.1:8766/tether/extension',
@@ -142,7 +144,11 @@ export function createConnectionManager({
       retryAttempt = 0
       sendRegistration(nextSocket, 'hello').then(
         (sent) => { if (sent) publish(CONNECTION_STATE.CONNECTED) },
-        () => { if (socket === nextSocket) nextSocket.close(1011, 'Registration failed') },
+        () => {
+          if (socket === nextSocket) {
+            nextSocket.close(REGISTRATION_FAILED_CLOSE_CODE, 'Registration failed')
+          }
+        },
       )
     })
 
@@ -156,7 +162,7 @@ export function createConnectionManager({
         } else if (message.type === 'ping') sendIfCurrent(nextSocket, pongMessage(message.requestId))
         else handleRequest(nextSocket, message)
       } catch {
-        nextSocket.close(1002, 'Invalid TETHER extension message')
+        nextSocket.close(INVALID_MESSAGE_CLOSE_CODE, 'Invalid TETHER extension message')
       }
     })
 

@@ -93,6 +93,42 @@ Invoke-RestMethod `
 Configure OpenCode or another custom-provider client with the printed base URL,
 token, and `tether-browser` model ID.
 
+## Tool calling and conversation continuity
+
+For Chat Completions clients, the activated browser conversation is the
+stateful tool session. The website keeps the semantic chat history; XposE never
+replays a synthetic OpenCode transcript into the browser.
+
+- OpenCode title-generation requests are answered locally and never enter the
+  browser conversation or its state.
+- The first real turn includes OpenCode's system/developer instructions and
+  OmniRoute's exact `<tool>...</tool>` prompt with complete function schemas.
+- Instructions are installed once per browser conversation. Tool definitions
+  are reinstalled only when the tool-catalog hash changes.
+- TETHER injects only the newest user message or newly returned tool result.
+- The local companion stores pending and completed call IDs, delivered-input
+  fingerprints, and the browser-conversation binding.
+- Browser output is parsed by the vendored OmniRoute generic or DeepSeek web
+  translator and returned as standard OpenAI Chat Completions `tool_calls`.
+- Tool results are resolved by `tool_call_id` and sent into the same browser
+  conversation with a continuation instruction.
+
+Clients may send `X-TETHER-Session-ID` to provide an explicit stable session
+hint. It is optional: the explicitly activated browser conversation remains
+authoritative, so a missing or changed client hint does not reject a
+continuation.
+
+For a live, credentialed comparison against OmniRoute and TETHER, configure the
+environment shown by:
+
+```powershell
+npm --prefix adapter run compare:tools -- --help
+```
+
+The harness runs the same OpenAI-style multi-tool loop against each configured
+endpoint, alternates streamed and non-streamed turns, and writes a JSON trace.
+It never writes API keys into the trace.
+
 ## Data flow
 
 ```mermaid
@@ -136,8 +172,10 @@ proof.
 
 Browser pages expose a stable completed response, not provider token deltas.
 XposE therefore waits for the stable browser answer and then emits valid SSE
-framing as a coarse content or tool-call chunk followed by completion. It does
-not simulate token timing.
+framing. Text is emitted after stabilization; tool-call names and arguments use
+standard incremental `tool_calls` deltas so OpenAI-compatible clients can
+exercise their normal stream accumulator. XposE does not simulate provider
+token timing.
 
 ## Lifecycle and routing
 

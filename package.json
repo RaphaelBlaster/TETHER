@@ -14,7 +14,8 @@
     "docs/assets",
     "extension/dist",
     "lib",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "test": "node --test test/*.test.js && npm --prefix adapter test && npm run registry:test",

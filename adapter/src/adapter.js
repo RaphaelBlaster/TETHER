@@ -33,7 +33,12 @@ export function createTetherAdapter({
   const extensionSessions = createExtensionSessionRegistry()
   const testRequests = createTestRequestController({ registry: extensionSessions, timeoutMs: testRequestTimeoutMs })
   const conversationState = createConversationStateStore({ path: conversationStatePath })
-  const browserTurns = createBrowserTurnController({ registry: extensionSessions, stateStore: conversationState, timeoutMs: browserTurnTimeoutMs })
+  const browserTurns = createBrowserTurnController({
+    registry: extensionSessions,
+    stateStore: conversationState,
+    timeoutMs: browserTurnTimeoutMs,
+    logger,
+  })
   const xposeApi = xpose ? createXposeApi({
     apiToken: xpose.apiToken,
     executeResponses: (message, options) => handleResponseRequest(message, options.emit, options),
@@ -232,6 +237,22 @@ export function createTetherAdapter({
             ...(browserEnvelope.namespace ? { namespace: browserEnvelope.namespace } : {}),
             arguments: JSON.stringify(browserEnvelope.arguments),
           },
+        })
+        emit(completedEvent(responseId))
+        return
+      }
+      if (browserEnvelope.type === 'tool_calls') {
+        browserEnvelope.calls.forEach((call, outputIndex) => {
+          emit({
+            type: 'response.output_item.done',
+            output_index: outputIndex,
+            item: {
+              type: 'function_call',
+              call_id: call.callId,
+              name: call.name,
+              arguments: JSON.stringify(call.arguments),
+            },
+          })
         })
         emit(completedEvent(responseId))
         return

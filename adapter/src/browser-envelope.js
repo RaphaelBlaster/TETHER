@@ -214,12 +214,12 @@ function parseJsonObjects(value, { repairToolCallBackslashes = false } = {}) {
 // correlated tool_call; JSON.stringify preserves the exact command while
 // escaping quotes and separators. Exact offered-tool validation still runs
 // before execution.
-function repairQuotedCommandArgument(value) {
+export function repairQuotedCommandArgument(value) {
   const commandStart = /"arguments"\s*:\s*\{\s*"(?:command|cmd)"\s*:\s*"/.exec(value)
   if (!commandStart) return null
   const openingQuote = commandStart.index + commandStart[0].length - 1
   const remainder = value.slice(openingQuote + 1)
-  const commandEnd = /"(?=\s*(?:,\s*"[^"]+"\s*:|}\s*}\s*$))/.exec(remainder)
+  const commandEnd = /"(?=\s*(?:,\s*"[^"]+"\s*:|}\s*}\s*(?:<\/tool(?:_call)?>)?\s*$))/i.exec(remainder)
   if (!commandEnd) return null
   const closingQuote = openingQuote + 1 + commandEnd.index
   const command = value.slice(openingQuote + 1, closingQuote)
@@ -303,7 +303,7 @@ function restoreWindowsPathTabs(value) {
 // separators inside JSON. This runs only after JSON.parse failed and only for
 // a speaker-prefixed or standalone correlated tool_call, so preserve structural
 // quote/backslash escapes while making other backslashes literal.
-function escapeRawBackslashesInJsonStrings(value) {
+export function escapeRawBackslashesInJsonStrings(value) {
   let result = ''
   let quoted = false
   for (let index = 0; index < value.length; index += 1) {

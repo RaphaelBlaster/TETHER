@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
 
 export const XPOSE_MODEL_ID = 'tether-browser'
 export const XPOSE_MAX_BODY_BYTES = 2 * 1024 * 1024
@@ -87,10 +87,22 @@ export function createXposeApi({
   }
 
   async function handleChatCompletions(body, request, response, signal) {
-    const parsed = normalizeChatRequest(body, modelId)
+    const parsed = normalizeChatRequest(body, modelId, request)
+    const localTitle = titleRequestFallback(body.messages)
+    if (localTitle !== null) {
+      const result = directChatResult(localTitle, parsed.requestedModel, now())
+      if (!parsed.stream) {
+        sendJson(response, 200, result)
+        return
+      }
+      writeSseHeaders(response)
+      for (const chunk of chatChunks(result)) response.write(`data: ${JSON.stringify(chunk)}\n\n`)
+      response.end('data: [DONE]\n\n')
+      return
+    }
     const events = []
     await executeResponses(parsed.request, {
-      connectionId: xposeConnectionId(request),
+      connectionId: `xpose:${parsed.sessionId}`,
       signal,
       emit: (event) => events.push(event),
     })
@@ -154,7 +166,7 @@ function normalizeResponsesRequest(body, modelId) {
   }
 }
 
-function normalizeChatRequest(body, modelId) {
+function normalizeChatRequest(body, modelId, request) {
   assertObject(body, 'Request body must be a JSON object')
   const requestedModel = requireModel(body.model, modelId)
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
@@ -165,12 +177,14 @@ function normalizeChatRequest(body, modelId) {
   }
   const input = body.messages.flatMap(normalizeChatMessage)
   if (input.length === 0) throw httpError(400, 'invalid_request', 'messages contain no supported user or tool input')
+  const sessionId = chatToolSessionId(body, request)
   return {
     requestedModel,
+    sessionId,
     stream: body.stream === true,
     request: {
       type: 'response.create',
-      model: 'tether-compact',
+      model: 'tether-tool-bridge',
       instructions: chatInstructions(body.messages),
       input,
       tools: normalizeChatTools(body.tools),
@@ -178,6 +192,9 @@ function normalizeChatRequest(body, modelId) {
       parallel_tool_calls: body.parallel_tool_calls === true,
       reasoning: null,
       previous_response_id: null,
+      client_metadata: {
+        tool_session_id: sessionId,
+      },
       stream: true,
       store: false,
     },
@@ -275,6 +292,57 @@ function normalizeChatToolChoice(choice) {
   throw httpError(400, 'invalid_request', 'Unsupported tool_choice')
 }
 
+function chatToolSessionId(body, request) {
+  const explicit = [
+    request?.headers?.['x-tether-session-id'],
+    request?.headers?.['x-opencode-session-id'],
+    body?.metadata?.session_id,
+    body?.metadata?.sessionId,
+    body?.user,
+  ].find((value) => typeof value === 'string' && value.trim())
+  if (explicit) {
+    return `client-${createHash('sha256').update(explicit.trim()).digest('hex').slice(0, 24)}`
+  }
+  const firstUser = body.messages?.find((message) => message?.role === 'user')
+  const identity = JSON.stringify({
+    model: body.model,
+    firstUser: firstUser ? chatText(firstUser.content) : '',
+  })
+  return `derived-${createHash('sha256').update(identity).digest('hex').slice(0, 24)}`
+}
+
+function titleRequestFallback(messages) {
+  const titleInstruction = messages
+    .filter((message) => ['system', 'developer'].includes(message?.role))
+    .map((message) => chatText(message.content))
+    .join('\n')
+  if (!titleInstruction.includes('You are a title generator. You output ONLY a thread title. Nothing else.')) {
+    return null
+  }
+  const userText = messages
+    .filter((message) => message?.role === 'user')
+    .map((message) => chatText(message.content))
+    .at(-1) ?? ''
+  const singleLine = userText.replace(/\s+/g, ' ').trim()
+  return singleLine.slice(0, 50) || 'New conversation'
+}
+
+function directChatResult(content, model, timestamp) {
+  return {
+    id: `chatcmpl_local_${timestamp}`,
+    object: 'chat.completion',
+    created: Math.floor(timestamp / 1000),
+    model,
+    choices: [{
+      index: 0,
+      message: { role: 'assistant', content },
+      logprobs: null,
+      finish_reason: 'stop',
+    }],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+  }
+}
+
 function responseResult(events, model, timestamp) {
   const failed = events.find((event) => event.type === 'response.failed')
   if (failed) throw responseFailure(failed)
@@ -295,18 +363,19 @@ function responseResult(events, model, timestamp) {
 
 function chatResult(events, model, timestamp) {
   const response = responseResult(events, model, timestamp)
-  const item = response.output[0]
+  const functionCalls = response.output.filter((item) => item?.type === 'function_call')
+  const item = response.output.find((candidate) => candidate?.type === 'message')
   let message
   let finishReason
-  if (item?.type === 'function_call') {
+  if (functionCalls.length > 0) {
     message = {
       role: 'assistant',
       content: null,
-      tool_calls: [{
-        id: item.call_id,
+      tool_calls: functionCalls.map((call) => ({
+        id: call.call_id,
         type: 'function',
-        function: { name: item.name, arguments: item.arguments },
-      }],
+        function: { name: call.name, arguments: call.arguments },
+      })),
     }
     finishReason = 'tool_calls'
   } else {
@@ -334,14 +403,35 @@ function chatChunks(result) {
   }
   const chunks = [{ ...base, choices: [{ index: 0, delta: { role: 'assistant' }, logprobs: null, finish_reason: null }] }]
   if (choice.message.tool_calls) {
-    chunks.push({
-      ...base,
-      choices: [{
-        index: 0,
-        delta: { tool_calls: choice.message.tool_calls.map((call, index) => ({ index, ...call })) },
-        logprobs: null,
-        finish_reason: null,
-      }],
+    choice.message.tool_calls.forEach((call, index) => {
+      chunks.push({
+        ...base,
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index,
+              id: call.id,
+              type: 'function',
+              function: { name: call.function.name, arguments: '' },
+            }],
+          },
+          logprobs: null,
+          finish_reason: null,
+        }],
+      })
+      const argumentChunks = call.function.arguments.match(/[\s\S]{1,64}/g) ?? ['']
+      argumentChunks.forEach((argumentsDelta) => {
+        chunks.push({
+          ...base,
+          choices: [{
+            index: 0,
+            delta: { tool_calls: [{ index, function: { arguments: argumentsDelta } }] },
+            logprobs: null,
+            finish_reason: null,
+          }],
+        })
+      })
     })
   } else if (choice.message.content) {
     chunks.push({

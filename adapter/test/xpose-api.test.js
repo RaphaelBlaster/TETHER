@@ -50,47 +50,69 @@ test('XposE serves authenticated Models, Responses, Chat Completions, tools, and
     model: 'tether-browser',
   })
   await waitFor(() => adapter.listExtensionRegistrations().length === 1)
+  let browserRequestCount = 0
   extension.addEventListener('message', (event) => {
     const message = JSON.parse(event.data)
     if (message.type !== 'browser_request') return
-    let envelope
+    browserRequestCount += 1
+    let text
     if (message.payload.prompt.startsWith('You are the model endpoint for a coding agent connected through TETHER.')) {
-      envelope = {
+      text = JSON.stringify({
         schemaVersion: 1,
         type: 'assistant_text',
         requestId: message.requestId,
         content: 'TETHER_INSTALL_OK',
+      })
+    } else if (message.payload.prompt.includes('Tool result (')) {
+      assert.doesNotMatch(message.payload.prompt, /SYSTEM START PROMPT/)
+      assert.doesNotMatch(message.payload.prompt, /Available tools:/)
+      text = 'browser:tool result accepted; task complete'
+    } else if (message.payload.prompt.includes('Available tools:')) {
+      if (message.payload.prompt.includes('use two tools')) {
+        assert.doesNotMatch(message.payload.prompt, /SYSTEM START PROMPT/)
+        text = [
+          '<tool>{"name":"echo_text","arguments":{"text":"' + 'x'.repeat(140) + '"}}</tool>',
+          '<tool>{"name":"get_number","arguments":{}}</tool>',
+        ].join('\n')
+      } else {
+        assert.match(message.payload.prompt, /SYSTEM START PROMPT/)
+        assert.match(message.payload.prompt, /echo_text/)
+        assert.match(message.payload.prompt, /additionalProperties/)
+        text = 'I will use the tool.\n<tool>{"name":"echo_text","arguments":{"text":"hello"}}</tool>'
       }
+    } else if (message.payload.prompt.startsWith('User: ') || message.payload.prompt.includes('\n\nUser: ')) {
+      const marker = message.payload.prompt.lastIndexOf('User: ')
+      text = `browser:${message.payload.prompt.slice(marker + 'User: '.length)}`
     } else {
       const command = JSON.parse(message.payload.prompt)
       if (command.type === 'tether_tool_schema') {
         assert.equal(command.definitions[0].name, 'echo_text')
-        envelope = {
+        text = JSON.stringify({
           schemaVersion: 1,
           type: 'tool_call',
           requestId: message.requestId,
           callId: 'call-echo',
           name: 'echo_text',
           arguments: { text: 'hello' },
-        }
+        })
       } else if (command.toolCatalog?.some((tool) => tool.name === 'echo_text')) {
-        envelope = {
+        text = JSON.stringify({
           schemaVersion: 1,
           type: 'tool_schema_request',
           requestId: message.requestId,
           tools: [{ name: 'echo_text' }],
-        }
+        })
       } else {
         const visible = command.turn.input.at(-1)
-        const text = visible?.type === 'message'
+        const visibleText = visible?.type === 'message'
           ? visible.content[0].text
           : visible?.output ?? 'no input'
-        envelope = {
+        text = JSON.stringify({
           schemaVersion: 1,
           type: 'assistant_text',
           requestId: message.requestId,
-          content: `browser:${text}`,
-        }
+          content: `browser:${visibleText}`,
+        })
       }
     }
     extension.send(JSON.stringify({
@@ -99,7 +121,7 @@ test('XposE serves authenticated Models, Responses, Chat Completions, tools, and
       type: 'browser_completed',
       requestId: message.requestId,
       browserSessionId: message.browserSessionId,
-      payload: { text: JSON.stringify(envelope) },
+      payload: { text },
     }))
   })
 
@@ -117,6 +139,27 @@ test('XposE serves authenticated Models, Responses, Chat Completions, tools, and
   const models = await authenticatedFetch(`${info.baseUrl}/models`)
   assert.equal(models.status, 200)
   assert.deepEqual((await models.json()).data.map((model) => model.id), ['tether-browser'])
+
+  const browserRequestsBeforeTitle = browserRequestCount
+  const title = await authenticatedFetch(`${info.baseUrl}/chat/completions`, {
+    method: 'POST',
+    body: JSON.stringify({
+      model: 'tether-browser',
+      stream: true,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a title generator. You output ONLY a thread title. Nothing else.',
+        },
+        { role: 'user', content: 'hih' },
+      ],
+    }),
+  })
+  assert.equal(title.status, 200)
+  const titleSse = await title.text()
+  assert.match(titleSse, /"content":"hih"/)
+  assert.match(titleSse, /data: \[DONE\]/)
+  assert.equal(browserRequestCount, browserRequestsBeforeTitle)
 
   const chat = await authenticatedFetch(`${info.baseUrl}/chat/completions`, {
     method: 'POST',
@@ -186,7 +229,10 @@ test('XposE serves authenticated Models, Responses, Chat Completions, tools, and
     method: 'POST',
     body: JSON.stringify({
       model: 'tether-browser',
-      messages: [{ role: 'user', content: 'use the echo tool' }],
+      messages: [
+        { role: 'system', content: 'SYSTEM START PROMPT' },
+        { role: 'user', content: 'use the echo tool' },
+      ],
       tools: [{
         type: 'function',
         function: {
@@ -205,11 +251,73 @@ test('XposE serves authenticated Models, Responses, Chat Completions, tools, and
   assert.equal(tool.status, 200)
   const toolBody = await tool.json()
   assert.equal(toolBody.choices[0].finish_reason, 'tool_calls')
-  assert.deepEqual(toolBody.choices[0].message.tool_calls, [{
-    id: 'call-echo',
-    type: 'function',
-    function: { name: 'echo_text', arguments: '{"text":"hello"}' },
-  }])
+  assert.equal(toolBody.choices[0].message.tool_calls.length, 1)
+  assert.match(toolBody.choices[0].message.tool_calls[0].id, /^call-\d+_0$/)
+  assert.deepEqual(toolBody.choices[0].message.tool_calls[0].function, {
+    name: 'echo_text',
+    arguments: '{"text":"hello"}',
+  })
+
+  const toolCall = toolBody.choices[0].message.tool_calls[0]
+  const continuation = await authenticatedFetch(`${info.baseUrl}/chat/completions`, {
+    method: 'POST',
+    body: JSON.stringify({
+      model: 'tether-browser',
+      messages: [
+        { role: 'user', content: 'use the echo tool' },
+        { role: 'assistant', content: null, tool_calls: [toolCall] },
+        { role: 'tool', tool_call_id: toolCall.id, content: 'hello' },
+      ],
+    }),
+  })
+  assert.equal(continuation.status, 200)
+  const continuationBody = await continuation.json()
+  assert.equal(continuationBody.choices[0].finish_reason, 'stop')
+  assert.equal(continuationBody.choices[0].message.content, 'browser:tool result accepted; task complete')
+
+  const multipleStream = await authenticatedFetch(`${info.baseUrl}/chat/completions`, {
+    method: 'POST',
+    body: JSON.stringify({
+      model: 'tether-browser',
+      stream: true,
+      messages: [
+        { role: 'user', content: 'use the echo tool' },
+        { role: 'assistant', content: null, tool_calls: [toolCall] },
+        { role: 'tool', tool_call_id: toolCall.id, content: 'hello' },
+        { role: 'user', content: 'use two tools' },
+      ],
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'echo_text',
+            parameters: {
+              type: 'object',
+              properties: { text: { type: 'string' } },
+              required: ['text'],
+              additionalProperties: false,
+            },
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'get_number',
+            parameters: { type: 'object', properties: {}, additionalProperties: false },
+          },
+        },
+      ],
+    }),
+  })
+  assert.equal(multipleStream.status, 200)
+  const multipleSse = await multipleStream.text()
+  const chunks = multipleSse.split('\n')
+    .filter((line) => line.startsWith('data: {'))
+    .map((line) => JSON.parse(line.slice(6)))
+  const toolDeltas = chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])
+  assert.deepEqual([...new Set(toolDeltas.map((delta) => delta.index))], [0, 1])
+  assert.ok(toolDeltas.filter((delta) => delta.index === 0 && delta.function?.arguments).length >= 3)
+  assert.equal(chunks.at(-1).choices[0].finish_reason, 'tool_calls')
 })
 
 test('XposE rejects CROSS sessions instead of relaying them', async (t) => {
@@ -371,6 +479,7 @@ function authenticatedFetch(url, options = {}) {
     headers: {
       authorization: `Bearer ${API_TOKEN}`,
       'content-type': 'application/json',
+      'x-tether-session-id': 'xpose-api-test-session',
       ...options.headers,
     },
   })

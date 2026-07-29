@@ -224,8 +224,22 @@ test('rejects the old model_request protocol without invoking a handler', async 
   manager.connect(); socket.emit('open'); await tick()
   socket.emit('message', { data: JSON.stringify({ version: 1, type: 'model_request', requestId: 'old', payload: { text: 'hello' } }) })
   assert.equal(socket.closed, true)
-  assert.equal(socket.closeCode, 1002)
+  assert.equal(socket.closeCode, 4002)
   assert.equal(invoked, false)
+})
+
+test('uses a browser-valid application close code when registration fails', async () => {
+  const socket = new FakeSocket()
+  const manager = createConnectionManager({
+    createSocket: () => socket,
+    getRegistration: async () => { throw new Error('restore failed') },
+  })
+  manager.connect()
+  socket.emit('open')
+  await tick()
+  assert.equal(socket.closed, true)
+  assert.equal(socket.closeCode, 4011)
+  assert.equal(socket.closeReason, 'Registration failed')
 })
 
 test('uses bounded reconnect delays and ignores events from stale sockets', async () => {
