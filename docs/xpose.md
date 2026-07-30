@@ -50,6 +50,25 @@ node .\bin\tether.js xpose --rotate-key
 
 Rotating the key requires updating every configured local client.
 
+## Reset extension pairing
+
+If the extension is reinstalled or XposE reports an extension pairing mismatch,
+stop XposE and run:
+
+```powershell
+tether --reset
+```
+
+For a source checkout:
+
+```powershell
+node .\bin\tether.js --reset
+```
+
+This removes only `~/.tether/state/xpose-pairing.json`. It preserves the XposE
+API key and conversation state. Restart `tether xpose`, then activate the
+extension endpoint to establish a new first pairing.
+
 ## API
 
 Every `/v1` request requires:

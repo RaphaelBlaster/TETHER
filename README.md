@@ -160,6 +160,16 @@ local client once; rotate the key only if it is exposed:
 tether xpose --rotate-key
 ```
 
+If the extension is reinstalled or its identity changes, stop XposE and reset
+only the trusted extension pairing:
+
+```powershell
+tether --reset
+```
+
+Then restart `tether xpose` and activate the extension endpoint. The reset
+preserves the XposE API key and browser-conversation state.
+
 #### Configure OpenCode
 
 Create a custom OpenAI-compatible provider with these values:
