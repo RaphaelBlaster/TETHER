@@ -2,11 +2,10 @@
   "name": "@raphaelblaster/tether-cli",
   "version": "0.1.0",
   "private": true,
-  "description": "TETHER Codex CLI with an embedded browser adapter",
+  "description": "Provider-neutral XposE bridge for authenticated browser chats",
   "type": "module",
   "bin": {
-    "tether": "bin/tether.js",
-    "tether-codex": "bin/tether.js"
+    "tether": "bin/tether.js"
   },
   "files": [
     "adapter/src",
@@ -28,7 +27,6 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@openai/codex": "0.143.0",
     "ajv": "8.18.0",
     "dirty-json": "0.9.2"
   },

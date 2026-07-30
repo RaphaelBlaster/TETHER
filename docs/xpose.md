@@ -6,9 +6,6 @@ the browser extension continues to connect outward over its loopback WebSocket.
 
 ## Start
 
-Stop a running plain `tether` process first because CLI and XposE intentionally
-share loopback port `8766`.
-
 Start the XposE companion:
 
 ```powershell
@@ -182,5 +179,4 @@ token timing.
 XposE accepts exactly one endpoint explicitly activated in XposE mode. Zero endpoints return
 `no_active_session`; multiple endpoints return `ambiguous_session`; CROSS
 registrations return `cross_not_supported`, and a CLI-mode endpoint returns
-`xpose_mode_required`. Plain `tether` retains its existing
-Codex-launching behavior and does not accept XposE's authenticated API contract.
+`xpose_mode_required`. The supported packaged launch command is `tether xpose`.

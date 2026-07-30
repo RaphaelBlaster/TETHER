@@ -5,7 +5,7 @@ This document records runtime boundaries that must survive beyond any one develo
 ## Current product path
 
 ```text
-Codex CLI listener
+Local XposE client
   <-> one TETHER service-worker WebSocket
   <-> zero or more explicitly activated browser-chat tabs
   <-> each activated tab's isolated browser session
@@ -45,7 +45,7 @@ elsewhere never steals or mutates that session.
 - Never persist a WebSocket or present a stored connection snapshot as live truth.
 
 Calibration validity is determined by resolving and validating its fingerprints, not merely
-by its age. Conversation/session storage is deliberately deferred until real Codex request,
+by its age. Conversation/session storage is deliberately deferred until real client request,
 retry, cancellation, history, and continuation behavior has been captured.
 
 Panel projection keeps four authorities separate:
@@ -112,7 +112,7 @@ attempt limits, route ownership/lifecycle, generalized owner types, and browser-
 routing remain deferred.
 
 The delivery order remains: prompt injection, three-message response calibration,
-MutationObserver extraction, and a complete plain-text Codex round trip first; OTP pairing
+MutationObserver extraction, and a complete plain-text client round trip first; OTP pairing
 comes after those foundations work. Exact route schemas must not be invented prematurely.
 
 The original 64 KiB Checkpoint 2 WebSocket text guard is retired before real model payloads.

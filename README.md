@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/tether-readme-hero.svg" width="100%" alt="TETHER — Keep the thread. Turn the browser chat already in front of you into a tab-bound endpoint for Codex.">
+  <img src="docs/assets/tether-readme-hero.svg" width="100%" alt="TETHER — Keep the thread. Turn the browser chat already in front of you into a tab-bound local endpoint.">
 </p>
 
 <p align="center">
@@ -18,9 +18,9 @@
   <a href="#troubleshooting">Troubleshooting</a>
 </p>
 
-TETHER connects Codex to a browser chat that is already open, authenticated, and carrying the context you care about. One command starts a local Responses adapter and Codex; the Manifest V3 extension binds the selected provider tab, exposes it through a side panel, and protects the page from accidental interaction while automation owns the route.
+TETHER exposes a browser chat that is already open, authenticated, and carrying the context you care about through an OpenAI-compatible localhost API. The Manifest V3 extension binds the selected provider tab, exposes it through a side panel, and protects the page from accidental interaction while automation owns the route.
 
-It is designed for a simple idea: **keep the conversation in the browser, but let Codex use it as an endpoint.**
+It is designed for a simple idea: **keep the conversation in the browser, but let a local client use it as an endpoint.**
 
 ## Why TETHER
 
@@ -31,7 +31,7 @@ It is designed for a simple idea: **keep the conversation in the browser, but le
 | **Interaction guard** | A translucent, themed overlay blocks accidental page input while TETHER is active and releases it on deactivation. |
 | **Local bridge** | The adapter listens on `127.0.0.1:8766`; no separate adapter installation or manual startup is required. |
 | **Provider aware** | ChatGPT, Gemini, and Claude have built-in recognition. Other HTTPS chat surfaces can be calibrated. |
-| **CLI, CROSS, and XposE** | Use one browser endpoint for Codex, pair two provider tabs, or expose one conversation through an authenticated localhost API. |
+| **CROSS and XposE** | Pair two provider tabs or expose one conversation through an authenticated localhost API. |
 
 ## Quick start
 
@@ -82,29 +82,23 @@ Then:
 4. Paste the full directory printed by `tether extension-path` into the folder picker, open it, and select the `dist` folder containing `manifest.json`.
 5. Pin TETHER if you want one-click access to the side panel.
 
-### 4. Start the local bridge and Codex
+### 4. Start XposE
 
-From the project you want Codex to work in:
-
-```powershell
-tether
-```
-
-Or pass the project directory explicitly:
+Start the authenticated local API:
 
 ```powershell
-tether -C "C:\path\to\project"
+tether xpose
 ```
 
-TETHER automatically starts the embedded adapter, waits for its health check, launches Codex with the local Responses provider, and stops the adapter when Codex exits.
+Keep this process running while a local OpenAI-compatible client uses the browser endpoint.
 
 ### 5. Activate a browser endpoint
 
 1. Open ChatGPT, Gemini, Claude, or a calibrated HTTPS chat page.
 2. Click the TETHER extension icon to open its side panel for that tab.
-3. Confirm that **Bridge online** is shown.
-4. Select **CLI** for a single endpoint.
-5. Choose **Activate as CLI endpoint**.
+3. Confirm that **XposE online** is shown.
+4. Select **XposE** for a single endpoint.
+5. Choose **Activate as XposE endpoint**.
 
 The active view turns orange, the endpoint becomes live, and the interaction guard appears on the owned page. Deactivate from the power control in the side panel to restore normal page interaction.
 
@@ -112,27 +106,22 @@ The active view turns orange, the endpoint becomes live, and the interaction gua
 
 ```mermaid
 flowchart LR
-    A[Codex CLI] <-- Responses --> B[Local TETHER adapter<br/>127.0.0.1:8766]
+    A[OpenCode or another local client] <-- OpenAI-compatible HTTP or SSE --> B[Local TETHER XposE adapter<br/>127.0.0.1:8766]
     B <-- Extension protocol --> C[TETHER MV3 extension]
     C <-- Tab-bound automation --> D[Browser chat tab]
 ```
 
-The adapter translates Codex Responses requests into a bounded browser-turn protocol. The extension maintains tab identity, connection state, calibration profiles, and the page interaction guard. Browser automation runs only against the endpoint selected in the side panel.
+The adapter translates OpenAI-compatible requests into a bounded browser-turn protocol. The extension maintains tab identity, connection state, calibration profiles, and the page interaction guard. Browser automation runs only against the endpoint selected in the side panel.
 
 ### Runtime sequence
 
-1. `tether` checks whether the local adapter is already healthy.
-2. If needed, it starts the embedded adapter on port `8766`.
-3. Codex launches with `tether-compact` and the TETHER Responses provider.
-4. The extension registers active browser sessions with the adapter.
-5. A Codex turn is correlated to the selected browser session.
-6. TETHER writes the prompt, submits it, waits for a stable response, and returns the correlated result to Codex.
+1. `tether xpose` starts the authenticated adapter on port `8766`.
+2. The extension registers the explicitly activated XposE browser session.
+3. A local client sends a Chat Completions or Responses request.
+4. TETHER correlates the request to the selected browser conversation.
+5. TETHER writes the prompt, submits it, waits for a stable response, and returns the correlated result to the client.
 
 ## Using TETHER
-
-### CLI mode
-
-CLI mode owns one provider tab at a time. It is the default mode and the clearest choice for normal Codex work.
 
 ### CROSS mode
 
@@ -147,10 +136,9 @@ Assign one role to each active endpoint. Duplicate roles are rejected, and both 
 
 XposE turns exactly one activated browser conversation into an authenticated,
 OpenAI-compatible localhost API. It works with OpenCode and other clients that
-accept a custom OpenAI-compatible provider, and it does not launch Codex.
+accept a custom OpenAI-compatible provider.
 
-Stop any existing plain `tether` process first because CLI and XposE share
-loopback port `8766`, then run:
+Run:
 
 ```powershell
 tether xpose
@@ -189,35 +177,6 @@ Create a custom OpenAI-compatible provider with these values:
 After saving the provider, select **TETHER Browser** and send a normal prompt.
 The request travels from OpenCode to the local companion, through the paired
 extension, and into the one XposE-owned browser tab.
-
-#### Launch the Codex desktop app with TETHER
-
-Keep `tether xpose` running and the browser endpoint activated, then run:
-
-```powershell
-tether launch codex-app
-```
-
-Pass a workspace path to open a specific project:
-
-```powershell
-tether launch codex-app "C:\path\to\project"
-```
-
-The launcher backs up `~/.codex/config.toml`, activates a minimal
-**TETHER Browser** configuration, and opens the Codex desktop app. The XposE API
-key remains in `~/.tether/state/xpose-api-token`; Codex reads it through a local
-credential helper instead of copying it into `config.toml`.
-
-To restore the previous Codex configuration and reopen the desktop app:
-
-```powershell
-tether launch codex-app --restore
-```
-
-The backup is kept under `~/.tether/state/codex-app` while TETHER GUI mode is
-active. If the temporary Codex config is edited, restore preserves that edited
-copy before reinstating the original.
 
 #### Verify the endpoint directly
 
@@ -291,7 +250,7 @@ The current extension suite covers tab lifecycle, session identity, calibration,
 | Path | Purpose |
 | --- | --- |
 | `bin/tether.js` | CLI entry point. |
-| `lib/launcher.js` | Starts the adapter and launches Codex with the TETHER provider. |
+| `lib/launcher.js` | Exposes the XposE command and packaged extension path. |
 | `adapter/` | Local Responses adapter and browser-turn protocol. |
 | `extension/src/` | React side panel, MV3 background worker, and content automation. |
 | `extension/dist/` | Production extension loaded through **Load unpacked** and included in the npm package. |
@@ -315,7 +274,7 @@ Do not paste a nonexistent or truncated path into the folder picker. Run `tether
 
 ### Bridge offline
 
-Start `tether` in a terminal. If it remains offline, check whether another process is using port `8766`, then restart the CLI and reopen the side panel.
+Start `tether xpose` in a terminal. If it remains offline, check whether another process is using port `8766`, then restart XposE and reopen the side panel.
 
 ### The side panel or protected card looks stale after an update
 
@@ -325,7 +284,7 @@ Reload TETHER from `chrome://extensions`, then refresh the provider tab once so 
 
 Grant access for the current origin. Built-in providers can activate directly; other HTTPS chat pages require calibration of the composer, send control, and response structure.
 
-### The page is protected but the CLI has closed
+### The page is protected but XposE has closed
 
 Return to the owned tab and use the side-panel power control to deactivate it. TETHER preserves tab ownership during short bridge interruptions so an unrelated tab cannot silently take over the session.
 
