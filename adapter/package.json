@@ -9,6 +9,8 @@
     "compare:tools": "node scripts/compare-tool-proxies.mjs"
   },
   "dependencies": {
+    "ajv": "8.18.0",
+    "dirty-json": "0.9.2",
     "playwright-core": "^1.61.1",
     "puppeteer-core": "^25.3.0"
   }

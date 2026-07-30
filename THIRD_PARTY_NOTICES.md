@@ -1,5 +1,14 @@
 # Third-party notices
 
+## dirty-json
+
+TETHER uses `dirty-json` 0.9.2 as a last-resort parser for malformed web-chat
+tool-call JSON. The package is distributed under the GNU Affero General Public
+License, version 3 or later:
+
+- https://github.com/RyanMarcus/dirty-json
+- https://www.gnu.org/licenses/agpl-3.0.html
+
 ## OmniRoute web tool-call translators
 
 The following files are mechanically transpiled from OmniRoute commit

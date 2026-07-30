@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto'
+import Ajv2020 from 'ajv/dist/2020.js'
+import dirtyJson from 'dirty-json'
 import {
   parseDeepSeekToolCalls,
   serializeDeepSeekToolPrompt,
@@ -19,12 +21,19 @@ const LOCAL_TOOL_EXECUTION_BOUNDARY = [
   'Execution environment:',
   'You are the reasoning model for TETHER. The tools below are executed by the connected local client harness on the user\'s machine.',
   'Do NOT use this website\'s built-in tools, shell, code runner, sandbox, VM, or search for tasks that require the listed tools. Those environments are separate from the user\'s machine and their results do not complete the local task.',
-  'When an external action is required, output only the exact <tool>...</tool> block for the local harness and stop. Wait for the returned Tool result before continuing.',
+  'When an external action is required, output only the exact browser-safe <tool>...</tool> block shown below for the local harness and stop. Wait for the returned Tool result before continuing.',
+  'Emit exactly one tool call per response. After every Tool result, if the task is unfinished, immediately emit the next required <tool> call. Never end an unfinished task with only a plan, a promise to call a tool, or a request for the user to say continue.',
+  'Keep the tool JSON inside the shown json code fence. The fence prevents the host website from interpreting command characters such as $, |, _, and - as Markdown or mathematics.',
   'Every <tool> payload must be valid JSON. In Windows paths, escape each backslash as \\\\ (for example, C:\\\\Users\\\\Name\\\\file.txt).',
   String.raw`Inside JSON strings, escape embedded double quotes as \". Example: {"command":"Remove-Item -LiteralPath \"C:\\Users\\Name\\file.txt\" -Force"}.`,
   'Never simulate a tool result or claim an action succeeded unless the local tool result confirms it.',
 ].join('\n')
-const WEB_TOOL_CONTRACT_VERSION = 4
+const WEB_TOOL_CONTRACT_VERSION = 5
+const dirtyToolAjv = new Ajv2020({
+  allErrors: true,
+  strict: false,
+  validateFormats: false,
+})
 
 export function prepareWebToolTurn({ request, conversation, providerId }) {
   const requestedSessionId = request.client_metadata?.tool_session_id
@@ -205,11 +214,15 @@ export function parseWebToolResponse(text, {
   if (!source) throw coded('invalid_browser_response', 'Browser response was empty')
   const normalizedTools = normalizeToolDefinitions(tools)
   const openAiTools = toOpenAiTools(normalizedTools)
-  const recoveredSource = recoverMissingOuterToolBrace(source)
+  const renderedSource = normalizeIncompleteRenderedToolEnvelope(source)
+  const recoveredSource = recoverMissingOuterToolBrace(renderedSource)
   const parseSource = normalizeRawWindowsToolPaths(recoveredSource)
-  const parsed = isDeepSeek(providerId)
+  const primaryParsed = isDeepSeek(providerId)
     ? parseDeepSeekToolCalls(parseSource, idSeed, openAiTools)
     : parseToolCallsFromText(parseSource, idSeed, openAiTools)
+  const parsed = primaryParsed.toolCalls?.length
+    ? primaryParsed
+    : parseDirtyToolCalls(recoveredSource, idSeed, normalizedTools) ?? primaryParsed
   return {
     content: String(parsed.content ?? '').trim(),
     toolCalls: (parsed.toolCalls ?? []).map((call) => ({
@@ -217,6 +230,270 @@ export function parseWebToolResponse(text, {
       name: call.function.name,
       arguments: parseArguments(call.function.arguments),
     })),
+  }
+}
+
+// Last-resort deserialization for rendered web-chat tool calls. The primary
+// OmniRoute parsers remain authoritative. dirty-json is accepted only for a
+// standalone tool payload whose exact name was offered and whose arguments
+// validate against that tool's schema with no undeclared top-level fields.
+function parseDirtyToolCalls(source, idSeed, tools) {
+  const candidates = standaloneDirtyToolCandidates(source)
+  if (candidates.length === 0) return null
+  const offered = new Map(tools.map((tool) => [tool.name, tool]))
+  const toolCalls = []
+
+  for (const candidate of candidates) {
+    const repairedCandidate = repairFinalDirtyStringArgument(candidate, offered)
+    const parseCandidate = repairedCandidate ?? normalizeRawWindowsToolPaths(candidate)
+    let parsed
+    try {
+      parsed = JSON.parse(parseCandidate)
+    } catch {
+      try {
+        parsed = dirtyJson.parse(parseCandidate)
+      } catch {
+        return null
+      }
+    }
+    if (!isObject(parsed)) return null
+
+    const functionPayload = parsed.type === 'function' && isObject(parsed.function)
+      ? parsed.function
+      : parsed
+    const name = functionPayload.name
+    const tool = offered.get(name)
+    if (!tool) return null
+
+    let args = functionPayload.arguments
+    if (typeof args === 'string') {
+      try {
+        args = JSON.parse(args)
+      } catch {
+        try {
+          args = dirtyJson.parse(args)
+        } catch {
+          return null
+        }
+      }
+    }
+    if (!isObject(args) || !validateDirtyToolArguments(args, tool.parameters)) return null
+
+    toolCalls.push({
+      id: `${idSeed}_${toolCalls.length}`,
+      type: 'function',
+      function: {
+        name,
+        arguments: JSON.stringify(args),
+      },
+    })
+  }
+
+  return toolCalls.length > 0
+    ? { content: '', toolCalls }
+    : null
+}
+
+function repairFinalDirtyStringArgument(candidate, offered) {
+  const name = candidate.match(/["']name["']\s*:\s*["']([^"'\\]{1,128})["']/)?.[1]
+  const tool = offered.get(name)
+  const properties = tool?.parameters?.properties
+  if (!tool || !isObject(properties)) return null
+
+  const argumentsIndex = candidate.search(/["']arguments["']\s*:/)
+  const closing = candidate.match(/"\s*}\s*}\s*$/)
+  if (argumentsIndex < 0 || !closing) return null
+
+  let selected = null
+  for (const [propertyName, schema] of Object.entries(properties)) {
+    const types = Array.isArray(schema?.type) ? schema.type : [schema?.type]
+    if (!types.includes('string')) continue
+    const matcher = new RegExp(`${escapeRegExp(JSON.stringify(propertyName))}\\s*:\\s*"`, 'g')
+    for (const match of candidate.matchAll(matcher)) {
+      const valueStart = match.index + match[0].length
+      if (match.index > argumentsIndex && valueStart < closing.index &&
+          (!selected || match.index > selected.matchIndex)) {
+        selected = { propertyName, matchIndex: match.index, valueStart }
+      }
+    }
+  }
+  if (!selected) return null
+
+  const rawValue = candidate.slice(selected.valueStart, closing.index)
+  const nestedJson = selected.propertyName === 'content'
+    ? recoverNestedJsonContent(rawValue)
+    : null
+  const value = nestedJson ?? decodeMalformedJsonString(rawValue)
+  if (value === null) return null
+  const encoded = JSON.stringify(value)
+  const repaired = `${candidate.slice(0, selected.valueStart)}${encoded.slice(1, -1)}${candidate.slice(closing.index)}`
+  return repairEarlierWindowsPathArguments(repaired, tool.parameters, selected.propertyName, argumentsIndex)
+}
+
+function repairEarlierWindowsPathArguments(candidate, parameters, finalPropertyName, argumentsIndex) {
+  const properties = parameters?.properties
+  if (!isObject(properties)) return candidate
+  const repairs = []
+
+  for (const [propertyName, schema] of Object.entries(properties)) {
+    const types = Array.isArray(schema?.type) ? schema.type : [schema?.type]
+    if (propertyName === finalPropertyName || !types.includes('string') || !/path|file|dir/i.test(propertyName)) continue
+    const marker = new RegExp(`${escapeRegExp(JSON.stringify(propertyName))}\\s*:\\s*"`, 'g')
+    for (const match of candidate.matchAll(marker)) {
+      const valueStart = match.index + match[0].length
+      if (match.index <= argumentsIndex) continue
+      const nextPropertyIndex = nextDeclaredPropertyIndex(candidate, properties, valueStart, propertyName)
+      if (nextPropertyIndex < 0) continue
+      const segment = candidate.slice(valueStart, nextPropertyIndex)
+      const boundary = segment.match(/"\s*,\s*$/)
+      if (!boundary) continue
+      const valueEnd = valueStart + boundary.index
+      const rawValue = candidate.slice(valueStart, valueEnd)
+      if (!/^[A-Za-z]:\\/.test(rawValue)) continue
+      repairs.push({ valueStart, valueEnd, value: collapseJsonBackslashPairs(rawValue) })
+    }
+  }
+
+  let repaired = candidate
+  for (const repair of repairs.sort((left, right) => right.valueStart - left.valueStart)) {
+    const encoded = JSON.stringify(repair.value)
+    repaired = `${repaired.slice(0, repair.valueStart)}${encoded.slice(1, -1)}${repaired.slice(repair.valueEnd)}`
+  }
+  return repaired
+}
+
+function nextDeclaredPropertyIndex(candidate, properties, valueStart, currentPropertyName) {
+  let next = -1
+  for (const propertyName of Object.keys(properties)) {
+    if (propertyName === currentPropertyName) continue
+    const matcher = new RegExp(`${escapeRegExp(JSON.stringify(propertyName))}\\s*:`, 'g')
+    for (const match of candidate.matchAll(matcher)) {
+      if (match.index > valueStart && (next < 0 || match.index < next)) next = match.index
+    }
+  }
+  return next
+}
+
+function collapseJsonBackslashPairs(value) {
+  let result = ''
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]
+    if (character === '\\' && value[index + 1] === '\\') index += 1
+    result += character
+  }
+  return result
+}
+
+function decodeMalformedJsonString(rawValue) {
+  let repaired = ''
+  let backslashes = 0
+  for (const character of rawValue) {
+    if (character === '"' && backslashes % 2 === 0) repaired += '\\'
+    if (character === '\n') repaired += '\\n'
+    else if (character === '\r') repaired += '\\r'
+    else if (character === '\t') repaired += '\\t'
+    else repaired += character
+    backslashes = character === '\\' ? backslashes + 1 : 0
+  }
+  try {
+    return JSON.parse(`"${repaired}"`)
+  } catch {
+    return null
+  }
+}
+
+function recoverNestedJsonContent(rawValue) {
+  const candidate = decodeJsonWhitespaceEscapes(rawValue)
+  const trimmed = candidate.trim()
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null
+  const normalized = /[A-Za-z]:\\/.test(candidate)
+    ? escapeRawBackslashesInJsonStrings(candidate)
+    : candidate
+  try {
+    JSON.parse(normalized)
+    return normalized
+  } catch {
+    return null
+  }
+}
+
+function decodeJsonWhitespaceEscapes(value) {
+  let result = ''
+  let quoted = false
+  let escaped = false
+  const whitespace = { n: '\n', r: '\r', t: '\t' }
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]
+    if (quoted) {
+      result += character
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') quoted = false
+      continue
+    }
+    if (character === '"') {
+      quoted = true
+      result += character
+      continue
+    }
+    if (character === '\\') {
+      const doubledEscape = value[index + 1] === '\\' ? value[index + 2] : null
+      const singleEscape = value[index + 1]
+      if (doubledEscape && whitespace[doubledEscape]) {
+        result += whitespace[doubledEscape]
+        index += 2
+        continue
+      }
+      if (whitespace[singleEscape]) {
+        result += whitespace[singleEscape]
+        index += 1
+        continue
+      }
+    }
+    result += character
+  }
+  return result
+}
+
+function standaloneDirtyToolCandidates(source) {
+  const text = String(source ?? '').trim()
+  if (!text) return []
+
+  const wrappers = [...text.matchAll(/<tool>\s*([\s\S]*?)\s*<\/tool>/gi)]
+  if (wrappers.length > 0) {
+    const remainder = text.replace(/<tool>\s*[\s\S]*?\s*<\/tool>/gi, '').trim()
+    if (remainder) return []
+    return wrappers.map((match) => stripJsonFence(match[1]))
+  }
+
+  const candidate = stripJsonFence(text)
+  return candidate.startsWith('{') &&
+    candidate.endsWith('}') &&
+    /["']name["']\s*:/.test(candidate) &&
+    /["']arguments["']\s*:/.test(candidate)
+    ? [candidate]
+    : []
+}
+
+function stripJsonFence(value) {
+  const text = String(value ?? '').trim()
+  const match = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  return (match?.[1] ?? text).trim()
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function validateDirtyToolArguments(args, parameters) {
+  if (!isObject(parameters)) return false
+  const schema = parameters.type === 'object' && isObject(parameters.properties)
+    ? { ...parameters, additionalProperties: false }
+    : parameters
+  try {
+    return dirtyToolAjv.compile(schema)(args)
+  } catch {
+    return false
   }
 }
 
@@ -288,7 +565,7 @@ function buildToolResultPrompt({
     includeToolContract ? buildToolCatalog(tools, providerId) : '',
     ...results.map(({ call, output, status }) =>
       `Tool result (${call.name}${status === 'error' ? ', error' : ''}): ${output || '(no output)'}`),
-    'Continue the task using the tool results above. Do NOT repeat tool calls that already succeeded; perform the next step or give the final answer.',
+    'Continue the task using the tool results above. Do NOT repeat tool calls that already succeeded. If the task is unfinished, emit the next <tool> call now; do not respond with only a plan, a promise to use a tool, or a request for the user to say continue. Otherwise give the final answer.',
   ].filter(Boolean).join('\n\n')
 }
 
@@ -319,6 +596,22 @@ function toOpenAiTools(tools) {
 function buildToolCatalog(tools) {
   const openAiTools = toOpenAiTools(normalizeToolDefinitions(tools))
   return serializeDeepSeekToolPrompt(openAiTools)
+    .replace(
+      'output ONLY this exact block (no markdown fence):',
+      'output ONLY this exact browser-safe block:',
+    )
+    .replace(
+      '<tool>{"name": "<tool_name>", "arguments": { ... }}</tool>',
+      '<tool>\n```json\n{"name": "<tool_name>", "arguments": { ... }}\n```\n</tool>',
+    )
+    .replace(
+      '- Use exactly <tool>...</tool>. Do NOT use <tool:name>, <tool_call>, <name>, <parameter>, id=/name= attributes, or code fences.',
+      '- Use exactly <tool>...</tool> with the JSON inside its json code fence. Do NOT use <tool:name>, <tool_call>, <name>, <parameter>, or id=/name= attributes.',
+    )
+    .replace(
+      '- Emit one <tool> block per call; you may put several blocks back to back.',
+      '- Emit exactly one <tool> block per response. After its Tool result returns, immediately emit the next call if the task is unfinished.',
+    )
 }
 
 function parseArguments(value) {
@@ -330,17 +623,59 @@ function parseArguments(value) {
   }
 }
 
+// Chat renderers can treat a model's literal <tool> wrapper as HTML. A malformed
+// closing tag may then survive extraction as one trailing ">", while the JSON
+// payload remains visible and complete. Normalize only a standalone object with
+// the required tool-call keys; ordinary prose and comparison operators remain
+// untouched. The existing JSON repair and offered-tool filtering still run.
+function normalizeIncompleteRenderedToolEnvelope(source) {
+  let candidate = source.trim()
+  if (candidate.startsWith('<tool>') && !candidate.includes('</tool>')) {
+    const remainder = candidate.slice('<tool>'.length).trim()
+    if (
+      remainder.startsWith('{') &&
+      remainder.endsWith('>') &&
+      /["']name["']\s*:/.test(remainder) &&
+      /["']arguments["']\s*:/.test(remainder)
+    ) {
+      candidate = remainder
+    }
+  }
+  if (
+    candidate.startsWith('{') &&
+    candidate.endsWith('>') &&
+    /["']name["']\s*:/.test(candidate) &&
+    /["']arguments["']\s*:/.test(candidate)
+  ) {
+    candidate = candidate.slice(0, -1).trim()
+  }
+  return candidate
+}
+
 function recoverMissingOuterToolBrace(source) {
-  if (!source.startsWith('{') || !source.endsWith('}') ||
-      !/["']name["']\s*:/.test(source) ||
-      !/["']arguments["']\s*:/.test(source)) {
+  let repairedWrapper = false
+  const wrapped = source.replace(/<tool>\s*([\s\S]*?)\s*<\/tool>/gi, (match, payload) => {
+    const candidate = stripJsonFence(payload)
+    const repaired = recoverBareMissingOuterToolBrace(candidate)
+    if (repaired === candidate) return match
+    repairedWrapper = true
+    return `<tool>${repaired}</tool>`
+  })
+  return repairedWrapper ? wrapped : recoverBareMissingOuterToolBrace(source)
+}
+
+function recoverBareMissingOuterToolBrace(source) {
+  const candidate = source.trim()
+  if (!candidate.startsWith('{') || !candidate.endsWith('}') ||
+      !/["']name["']\s*:/.test(candidate) ||
+      !/["']arguments["']\s*:/.test(candidate)) {
     return source
   }
 
   let depth = 0
   let quote = ''
   let escaped = false
-  for (const character of source) {
+  for (const character of candidate) {
     if (escaped) {
       escaped = false
       continue
@@ -359,7 +694,7 @@ function recoverMissingOuterToolBrace(source) {
     }
     if (depth < 0) return source
   }
-  return depth === 1 && !quote ? `${source}}` : source
+  return depth === 1 && !quote ? `${candidate}}` : source
 }
 
 function normalizeRawWindowsToolPaths(source) {

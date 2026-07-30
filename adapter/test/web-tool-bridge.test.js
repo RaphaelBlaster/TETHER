@@ -47,15 +47,21 @@ test('tool contract keeps OmniRoute serialization and defines the local executio
     },
   }))
   const contract = buildToolContract(TOOLS)
-  assert.ok(contract.endsWith(serializeDeepSeekToolPrompt(openAiTools)))
+  const omniRouteCatalog = serializeDeepSeekToolPrompt(openAiTools).split('Available tools:\n')[1]
+  assert.ok(contract.endsWith(`Available tools:\n${omniRouteCatalog}`))
   assert.equal(buildToolContract(TOOLS, 'gemini'), contract)
   assert.match(contract, /connected local client harness/)
   assert.match(contract, /Do NOT use this website's built-in tools/)
+  assert.match(contract, /Emit exactly one tool call per response/)
+  assert.match(contract, /Never end an unfinished task with only a plan/)
+  assert.match(contract, /```json/)
+  assert.match(contract, /prevents the host website from interpreting command characters/)
   assert.match(contract, /Every <tool> payload must be valid JSON/)
   assert.match(contract, /escape each backslash as \\\\/)
   assert.match(contract, /escape embedded double quotes as \\"/)
   assert.match(contract, /Never simulate a tool result/)
-  assert.match(contract, /<tool>\{"name": "<tool_name>", "arguments": \{ \.\.\. \}\}<\/tool>/)
+  assert.match(contract, /<tool>\n```json\n\{"name": "<tool_name>", "arguments": \{ \.\.\. \}\}\n```\n<\/tool>/)
+  assert.doesNotMatch(contract, /no markdown fence|several blocks back to back/)
   assert.match(contract, /get_weather/)
   assert.match(contract, /additionalProperties/)
   assert.doesNotMatch(contract, /tool_schema_request|completion_check|requestId/)
@@ -80,6 +86,46 @@ test('parses canonical, fenced, loose, and multiple tool blocks', () => {
   ].join('\n'), { tools: TOOLS })
   assert.equal(multiple.toolCalls.length, 2)
   assert.equal(multiple.content, 'Working.')
+})
+
+test('parses a browser-safe fenced PowerShell tool call without renderer corruption', () => {
+  const raw = [
+    '<tool>',
+    '```json',
+    String.raw`{"name":"run_command","arguments":{"command":"$orders | Measure-Object -Property quantity -Sum"}}`,
+    '```',
+    '</tool>',
+  ].join('\n')
+  const parsed = parseWebToolResponse(raw, {
+    tools: TOOLS,
+    providerId: 'deepseek',
+  })
+  assert.equal(parsed.content, '')
+  assert.equal(parsed.toolCalls.length, 1)
+  assert.equal(parsed.toolCalls[0].name, 'run_command')
+  assert.equal(
+    parsed.toolCalls[0].arguments.command,
+    '$orders | Measure-Object -Property quantity -Sum',
+  )
+})
+
+test('recovers one missing outer brace inside a browser-safe fenced tool block', () => {
+  const command = String.raw`Get-FileHash -LiteralPath "C:\Users\Megh Mayur\orders.json" -Algorithm SHA256 | ForEach-Object { $_.Hash }`
+  const raw = [
+    '<tool>',
+    '```json',
+    `{"name":"run_command","arguments":{"command":${JSON.stringify(command)}}`,
+    '```',
+    '</tool>',
+  ].join('\n')
+  const parsed = parseWebToolResponse(raw, {
+    tools: TOOLS,
+    providerId: 'deepseek',
+  })
+  assert.equal(parsed.content, '')
+  assert.equal(parsed.toolCalls.length, 1)
+  assert.equal(parsed.toolCalls[0].name, 'run_command')
+  assert.equal(parsed.toolCalls[0].arguments.command, command)
 })
 
 test('normalizes casing and one unambiguous slight misspelling', () => {
@@ -163,6 +209,182 @@ test('parses a DeepSeek bash call with unescaped path quotes and backslashes', (
     String.raw`Remove-Item -LiteralPath "C:\Users\Megh Mayur\OneDrive\Desktop\dump\temp\test_out.docx" -Force`,
   )
   assert.equal(parsed.toolCalls[0].arguments.timeout, 30000)
+})
+
+test('parses a rendered bash call with an incomplete tool wrapper and raw Windows quoting', () => {
+  const tools = [{
+    type: 'function',
+    name: 'bash',
+    description: 'Run PowerShell.',
+    parameters: {
+      type: 'object',
+      properties: { command: { type: 'string' } },
+      required: ['command'],
+    },
+  }]
+  const payload = String.raw`{"name":"bash","arguments":{"command":"Test-Path -LiteralPath "C:\Users\Megh Mayur\OneDrive\Desktop\tether-long-horizon-test""}}>`
+  for (const raw of [`<tool>${payload}`, payload]) {
+    const parsed = parseWebToolResponse(raw, {
+      tools,
+      providerId: 'chatgpt',
+    })
+    assert.equal(parsed.content, '')
+    assert.equal(parsed.toolCalls.length, 1)
+    assert.equal(parsed.toolCalls[0].name, 'bash')
+    assert.equal(
+      parsed.toolCalls[0].arguments.command,
+      String.raw`Test-Path -LiteralPath "C:\Users\Megh Mayur\OneDrive\Desktop\tether-long-horizon-test"`,
+    )
+  }
+})
+
+test('uses schema-validated dirty JSON fallback for unescaped quotes in write content', () => {
+  const tools = [{
+    type: 'function',
+    name: 'write',
+    description: 'Write a file.',
+    parameters: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        filePath: { type: 'string' },
+        content: { type: 'string' },
+      },
+      required: ['content', 'filePath'],
+    },
+  }]
+  const raw = String.raw`{"name":"write","arguments":{"filePath":"C:\\Users\\Megh Mayur\\OneDrive\\Desktop\\tether-long-horizon-test\\orders.json","content":"[\\n  {\\n    "id": "A100",\\n    "category": "hardware",\\n    "quantity": 2,\\n    "unitPrice": 125.5\\n  },\\n  {\\n    "id": "A101",\\n    "category": "software",\\n    "quantity": 1,\\n    "unitPrice": 80\\n  }\\n]\\n"}}`
+  const parsed = parseWebToolResponse(raw, {
+    tools,
+    providerId: 'chatgpt',
+    idSeed: 'dirty-write',
+  })
+
+  assert.equal(parsed.content, '')
+  assert.equal(parsed.toolCalls.length, 1)
+  assert.equal(parsed.toolCalls[0].name, 'write')
+  assert.equal(
+    parsed.toolCalls[0].arguments.filePath,
+    String.raw`C:\Users\Megh Mayur\OneDrive\Desktop\tether-long-horizon-test\orders.json`,
+  )
+  assert.deepEqual(JSON.parse(parsed.toolCalls[0].arguments.content), [
+    { id: 'A100', category: 'hardware', quantity: 2, unitPrice: 125.5 },
+    { id: 'A101', category: 'software', quantity: 1, unitPrice: 80 },
+  ])
+})
+
+test('recovers DeepSeek write content containing nested escaped quotes and Windows paths', () => {
+  const tools = [{
+    type: 'function',
+    name: 'write',
+    description: 'Write a file.',
+    parameters: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        filePath: { type: 'string' },
+        content: { type: 'string' },
+      },
+      required: ['content', 'filePath'],
+    },
+  }]
+  const raw = String.raw`<tool>{"name": "write", "arguments": {"filePath": "C:\\Users\\Megh Mayur\\OneDrive\\Desktop\\tether-dirty-json-test-20260729\\orders.json", "content": "[\\n  {\\n    "id": "A100",\\n    "category": "hardware",\\n    "quantity": 2,\\n    "unitPrice": 125.5,\\n    "note": "Customer said \"urgent delivery\"",\\n    "sourcePath": "C:\\Data\\incoming\\A100.txt"\\n  },\\n  {\\n    "id": "A101",\\n    "category": "software",\\n    "quantity": 1,\\n    "unitPrice": 80,\\n    "note": "License tier is \"professional\"",\\n    "sourcePath": "C:\\Data\\incoming\\A101.txt"\\n  },\\n  {\\n    "id": "A102",\\n    "category": "hardware",\\n    "quantity": 4,\\n    "unitPrice": 19.75,\\n    "note": "Handle as \"fragile\"",\\n    "sourcePath": "C:\\Data\\incoming\\A102.txt"\\n  }\\n]"}}</tool>`
+  const parsed = parseWebToolResponse(raw, {
+    tools,
+    providerId: 'deepseek',
+    idSeed: 'deepseek-dirty-write',
+  })
+
+  assert.equal(parsed.content, '')
+  assert.equal(parsed.toolCalls.length, 1)
+  assert.equal(parsed.toolCalls[0].name, 'write')
+  assert.equal(
+    parsed.toolCalls[0].arguments.filePath,
+    String.raw`C:\Users\Megh Mayur\OneDrive\Desktop\tether-dirty-json-test-20260729\orders.json`,
+  )
+  assert.deepEqual(JSON.parse(parsed.toolCalls[0].arguments.content), [
+    {
+      id: 'A100',
+      category: 'hardware',
+      quantity: 2,
+      unitPrice: 125.5,
+      note: 'Customer said "urgent delivery"',
+      sourcePath: String.raw`C:\Data\incoming\A100.txt`,
+    },
+    {
+      id: 'A101',
+      category: 'software',
+      quantity: 1,
+      unitPrice: 80,
+      note: 'License tier is "professional"',
+      sourcePath: String.raw`C:\Data\incoming\A101.txt`,
+    },
+    {
+      id: 'A102',
+      category: 'hardware',
+      quantity: 4,
+      unitPrice: 19.75,
+      note: 'Handle as "fragile"',
+      sourcePath: String.raw`C:\Data\incoming\A102.txt`,
+    },
+  ])
+})
+
+test('does not decode raw Windows path separators in write arguments as tab escapes', () => {
+  const tools = [{
+    type: 'function',
+    name: 'write',
+    parameters: {
+      type: 'object',
+      properties: {
+        filePath: { type: 'string' },
+        content: { type: 'string' },
+      },
+      required: ['content', 'filePath'],
+    },
+  }]
+  const raw = String.raw`<tool>{"name":"write","arguments":{"filePath":"C:\Users\Megh Mayur\OneDrive\Desktop\tether-dirty-json-test\orders.json","content":"[\\n  {\\n    "id": "A100",\\n    "note": "Customer said \"urgent delivery\"",\\n    "sourcePath": "C:\Data\incoming\A100.txt"\\n  }\\n]"}}</tool>`
+  const parsed = parseWebToolResponse(raw, {
+    tools,
+    providerId: 'deepseek',
+    idSeed: 'deepseek-raw-path',
+  })
+
+  assert.equal(parsed.content, '')
+  assert.equal(parsed.toolCalls.length, 1)
+  assert.equal(
+    parsed.toolCalls[0].arguments.filePath,
+    String.raw`C:\Users\Megh Mayur\OneDrive\Desktop\tether-dirty-json-test\orders.json`,
+  )
+  assert.equal(parsed.toolCalls[0].arguments.filePath.includes('\t'), false)
+  assert.deepEqual(JSON.parse(parsed.toolCalls[0].arguments.content), [{
+    id: 'A100',
+    note: 'Customer said "urgent delivery"',
+    sourcePath: String.raw`C:\Data\incoming\A100.txt`,
+  }])
+})
+
+test('dirty JSON fallback rejects unoffered tools and undeclared arguments', () => {
+  const tools = [{
+    type: 'function',
+    name: 'write',
+    parameters: {
+      type: 'object',
+      properties: {
+        filePath: { type: 'string' },
+        content: { type: 'string' },
+      },
+      required: ['content', 'filePath'],
+    },
+  }]
+  const unoffered = String.raw`{"name":"delete_everything","arguments":{"filePath":"C:\\safe.txt","content":"say "hello""}}`
+  const extraArgument = String.raw`{"name":"write","arguments":{"filePath":"C:\\safe.txt","content":"say "hello"","unexpected":true}}`
+
+  for (const raw of [unoffered, extraArgument]) {
+    const parsed = parseWebToolResponse(raw, { tools, providerId: 'chatgpt' })
+    assert.equal(parsed.toolCalls.length, 0)
+    assert.equal(parsed.content, raw)
+  }
 })
 
 test('parses a final command argument with several unescaped PowerShell quotes', () => {
@@ -386,7 +608,7 @@ test('an upgraded tool contract is installed once without replaying OpenCode ins
   assert.doesNotMatch(upgraded.prompt, /OpenCode starter prompt/)
   assert.match(upgraded.prompt, /Execution environment:/)
   assert.match(upgraded.prompt, /User: second/)
-  assert.equal(upgraded.sessionState.toolContractVersion, 4)
+  assert.equal(upgraded.sessionState.toolContractVersion, 5)
 })
 
 test('tool result resolves a pending id and sends only the new result plus continuation', () => {
@@ -411,7 +633,7 @@ test('tool result resolves a pending id and sends only the new result plus conti
         instructionsInstalled: true,
         availableTools: TOOLS,
         toolsHash: hashTools(TOOLS),
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         pendingCalls: [pending],
         completedCalls: [],
         deliveredUserInputCounts: {},
@@ -425,6 +647,8 @@ test('tool result resolves a pending id and sends only the new result plus conti
   assert.match(prepared.prompt, /temp/)
   assert.match(prepared.prompt, /22/)
   assert.match(prepared.prompt, /Continue the task/)
+  assert.match(prepared.prompt, /emit the next <tool> call now/)
+  assert.match(prepared.prompt, /do not respond with only a plan/)
   assert.doesNotMatch(prepared.prompt, /original task that must not be replayed/)
 })
 
