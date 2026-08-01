@@ -43,6 +43,43 @@ test('preserves a unique provider selector for an anonymous React send control',
   assert.equal(result.send.method, 'provider_hint')
 })
 
+test('rejects an ambiguous accessible-name selector for the selected Gemini composer', () => {
+  const hiddenComposer = element({
+    tagName: 'DIV',
+    attributes: {
+      'aria-label': 'Enter a prompt here',
+      contenteditable: 'true',
+      role: 'textbox',
+    },
+    className: 'ql-editor hidden-editor',
+    rect: { left: 100, top: 500, width: 0, height: 0 },
+  })
+  const visibleComposer = element({
+    tagName: 'DIV',
+    attributes: {
+      'aria-label': 'Enter a prompt here',
+      contenteditable: 'true',
+      role: 'textbox',
+    },
+    className: 'ql-editor active-editor',
+    rect: { left: 100, top: 500, width: 600, height: 100 },
+  })
+  const geminiSelector = 'div.ql-editor.active-editor[contenteditable="true"]'
+  const ariaSelector = '[aria-label="Enter a prompt here"]'
+  const document = documentFor(new Map([
+    [ariaSelector, [hiddenComposer, visibleComposer]],
+    [geminiSelector, [visibleComposer]],
+  ]))
+
+  const result = vm.runInNewContext(
+    buildDiscoveryScript({ composerHints: [geminiSelector, ariaSelector] }),
+    pageContext(document),
+  )
+
+  assert.equal(result.composer.method, 'provider_hint')
+  assert.equal(result.composer.selector, geminiSelector)
+})
+
 test('discovery reports the DeepSeek class-disabled send control as disabled', () => {
   const composer = element({
     tagName: 'TEXTAREA',

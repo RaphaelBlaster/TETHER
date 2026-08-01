@@ -351,11 +351,18 @@ export function buildDiscoveryScript({
     const bestSend = bestOf(sendCandidates, scoreSend);
 
     // Build stable CSS path for re-query when possible.
-    function cssPath(fp) {
-      if (!fp) return null;
-      if (fp.id) return '#' + CSS.escape(fp.id);
-      if (fp.testId) return '[data-testid="' + fp.testId.replace(/"/g, '\\\\"') + '"]';
-      if (fp.ariaLabel) return '[aria-label="' + fp.ariaLabel.replace(/"/g, '\\\\"') + '"]';
+    function cssPath(el, fp) {
+      if (!el || !fp) return null;
+      const candidates = [];
+      if (fp.id) candidates.push('#' + CSS.escape(fp.id));
+      if (fp.testId) candidates.push('[data-testid="' + fp.testId.replace(/"/g, '\\\\"') + '"]');
+      if (fp.ariaLabel) candidates.push('[aria-label="' + fp.ariaLabel.replace(/"/g, '\\\\"') + '"]');
+      for (const selector of candidates) {
+        try {
+          const matches = document.querySelectorAll(selector);
+          if (matches.length === 1 && matches[0] === el) return selector;
+        } catch (_) {}
+      }
       return null;
     }
 
@@ -375,14 +382,14 @@ export function buildDiscoveryScript({
     }
 
     const composerSelector = bestComposer
-      ? cssPath(bestComposer.fingerprint) ||
+      ? cssPath(composerEls[bestComposer.index], bestComposer.fingerprint) ||
         configuredSelector(composerEls[bestComposer.index], [
           ...cfg.calibratedComposerSelectors,
           ...cfg.composerHints,
         ])
       : null;
     const sendSelector = bestSend
-      ? cssPath(bestSend.fingerprint) ||
+      ? cssPath(sendEls[bestSend.index], bestSend.fingerprint) ||
         configuredSelector(sendEls[bestSend.index], [
           ...cfg.calibratedSendSelectors,
           ...cfg.submitHints,
