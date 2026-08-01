@@ -170,6 +170,18 @@ tether --reset
 Then restart `tether xpose` and activate the extension endpoint. The reset
 preserves the XposE API key and browser-conversation state.
 
+Update a global npm installation to the latest reviewed code on TETHER's
+official GitHub `main` branch:
+
+```powershell
+tether --update
+```
+
+The updater runs npm's global GitHub installation command without accepting a
+custom repository or branch. After it completes, reload TETHER from
+`chrome://extensions`, refresh the provider tab, and restart any running
+`tether xpose` process so both sides use the updated code.
+
 #### Configure OpenCode
 
 Create a custom OpenAI-compatible provider with these values:
