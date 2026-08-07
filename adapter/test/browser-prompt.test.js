@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  buildDeferredPromptFrames,
   buildBrowserPrompt,
   buildProtocolBootstrapPrompt,
   buildToolDemoPrompt,
   buildUnavailableToolPrompt,
+  prepareBrowserFrames,
 } from '../src/browser-prompt.js'
 
 test('protocol bootstrap is an explicit instructional turn with examples and correlated acknowledgement', () => {
@@ -23,7 +25,59 @@ test('protocol bootstrap is an explicit instructional turn with examples and cor
   assert.match(prompt, /Never install or download it without explicit authorization/)
   assert.doesNotMatch(prompt, /COPY_FROM_REQUEST|COPY_THE_REQUEST_ID/)
   assert.match(prompt, /"requestId":"bootstrap-1"/)
-  assert.ok(prompt.length < 4_000)
+  assert.ok(prompt.length < 4_500)
+})
+
+test('a Gemini-sized command installs every exact chunk before a small execution message', () => {
+  const originalPrompt = '😀'.repeat(21_479)
+  const frames = prepareBrowserFrames([{
+    requestId: 'large-gemini',
+    kind: 'turn',
+    prompt: originalPrompt,
+  }], { providerId: 'gemini' })
+
+  const installFrames = frames.filter((frame) => frame.kind === 'install')
+  const executeFrame = frames.at(-1)
+  assert.equal(frames.length, 3)
+  assert.equal(installFrames.length, 2)
+  assert.ok(frames.every((frame) => frame.prompt.length <= 28_000))
+  assert.equal(executeFrame.deferred, true)
+  const executePayload = JSON.parse(executeFrame.prompt)
+  assert.equal(executePayload.type, 'tether_deferred_execute')
+  assert.equal(executePayload.finalChunk, undefined)
+  assert.ok(executeFrame.prompt.length < 1_000)
+  assert.deepEqual(executeFrame.responseRequestIds, ['large-gemini', executeFrame.requestId])
+  assert.ok(installFrames.every((frame) => {
+    const value = JSON.parse(frame.prompt).patches[0].value
+    const code = value.charCodeAt(value.length - 1)
+    return code < 0xD800 || code > 0xDBFF
+  }))
+
+  const reconstructed = [
+    ...installFrames
+      .map((frame) => JSON.parse(frame.prompt))
+      .sort((left, right) => left.frameIndex - right.frameIndex)
+      .map((payload) => payload.patches[0].value),
+  ].join('')
+  assert.equal(reconstructed, originalPrompt)
+})
+
+test('normal frames remain unchanged and acknowledged deferred chunks are not replayed', () => {
+  const normal = { requestId: 'normal', kind: 'turn', prompt: 'small command' }
+  assert.deepEqual(prepareBrowserFrames([normal], { providerId: 'gemini' }), [normal])
+
+  const oversized = { requestId: 'retry-large', kind: 'turn', prompt: 'x'.repeat(40_000) }
+  const first = buildDeferredPromptFrames(oversized, { maxFrameChars: 28_000 })
+  const installedInstallKeys = first
+    .filter((frame) => frame.kind === 'install')
+    .map((frame) => frame.installKey)
+  const retried = prepareBrowserFrames([oversized], {
+    providerId: 'gemini',
+    installedInstallKeys,
+  })
+  assert.equal(retried.length, 1)
+  assert.equal(retried[0].deferred, true)
+  assert.equal(retried[0].requestId, first.at(-1).requestId)
 })
 
 test('unavailable-tool recovery includes the rejected request, real catalog, and installation consent policy', () => {

@@ -2,11 +2,13 @@ import { createHash } from 'node:crypto'
 import { EXTENSION_PROTOCOL, EXTENSION_PROTOCOL_VERSION } from './extension-session-registry.js'
 import {
   BOOTSTRAP_VERSION,
+  buildDeferredPromptFrames,
   buildBrowserPromptSequence,
   buildCompletionCheckPrompt,
   buildDeferredToolSchemaPrompt,
   buildProtocolHelpPrompt,
   buildUnavailableToolPrompt,
+  prepareBrowserFrames,
 } from './browser-prompt.js'
 import { parseBrowserResponse } from './browser-envelope.js'
 import { compactInstallationState, compactProjectionState, selectDeferredToolDefinitions } from './compact-request.js'
@@ -61,17 +63,21 @@ export function createBrowserTurnController({
     const installBootstrap = codexRequest.model !== 'tether-tool-bridge' &&
       conversation?.bootstrapVersion !== BOOTSTRAP_VERSION
     const frames = webToolPrepared
-      ? [{
+      ? prepareBrowserFrames([{
           requestId,
           kind: 'web_tool_turn',
           prompt: webToolPrepared.prompt,
-        }]
+        }], {
+          providerId: session.providerId,
+          installedInstallKeys: conversation?.installedInstallKeys,
+        })
       : buildBrowserPromptSequence({
           requestId,
           request: codexRequest,
           installBootstrap,
           conversation,
           connectionId,
+          providerId: session.providerId,
         })
     let resolveRequest
     let rejectRequest
@@ -105,6 +111,20 @@ export function createBrowserTurnController({
     cancelSchedule(operation.timeoutId)
     const frame = operation.frames[operation.frameIndex]
     if (message.type === 'browser_error') {
+      const observedBudget = observedComposerPromptBudget(message.error)
+      if (
+        frame?.kind !== 'install' &&
+        frame?.deferred !== true &&
+        observedBudget !== null &&
+        frame.prompt.length > observedBudget
+      ) {
+        const replacements = buildDeferredPromptFrames(frame, {
+          maxFrameChars: observedBudget,
+        })
+        operation.frames.splice(operation.frameIndex, 1, ...replacements)
+        dispatchFrame(operation)
+        return
+      }
       const stableResponse = stableResponseFromTimeout(message.error)
       if (frame?.kind === 'install' && message.error?.code === 'response_timeout') {
         message = {
@@ -154,13 +174,11 @@ export function createBrowserTurnController({
             deliveredToolResults: [],
             sessionState: finalized.sessionState,
           }
-          operation.frames.push({
+          appendPreparedFrame(operation, {
             requestId: retryRequestId,
             kind: 'web_tool_retry',
             prompt: finalized.retryPrompt,
           })
-          operation.frameIndex += 1
-          dispatchFrame(operation)
           return
         }
         logWebToolStage(logger, 'completed', {
@@ -220,7 +238,7 @@ export function createBrowserTurnController({
             frame.kind !== 'install' && operation.repairCount < 1) {
           operation.repairCount += 1
           const repairRequestId = `${operation.requestId}.repair.${operation.repairCount}`
-          operation.frames.push({
+          appendPreparedFrame(operation, {
             requestId: repairRequestId,
             kind: 'repair',
             toolSchemaDelivered: frame.kind === 'schema' || frame.toolSchemaDelivered === true,
@@ -242,14 +260,12 @@ export function createBrowserTurnController({
               instruction: 'Re-evaluate originalCommand using previousResponse only as diagnostic context. Continue the same original objective across automatic tool-result turns. Return a final answer as ordinary plain text only when that objective is complete or progress genuinely requires missing user input. If another tool is needed but originalCommand does not deliver an exact tether_tool_schema, return exactly one minified tool_schema_request JSON object for one offeredTools entry using this repair requestId. If originalCommand delivers tether_tool_schema, return exactly one minified tool_call JSON object matching it and using this repair requestId. JSON-escape strings only inside a JSON control message. Do not quote or copy previousResponse.',
             }),
           })
-          operation.frameIndex += 1
-          dispatchFrame(operation)
           return
         }
         else throw error
       }
       if (frame.kind === 'install') {
-        if (envelope.type !== 'assistant_text' || envelope.content !== 'TETHER_INSTALL_OK') {
+        if (!isInstallAcknowledgement(envelope)) {
           throw coded('invalid_install_ack', 'Browser did not acknowledge the installation frame exactly')
         }
         const acknowledgedConversation = await stateStore.get(operation.conversationKey)
@@ -262,6 +278,8 @@ export function createBrowserTurnController({
         operation.frameIndex += 1
         if (operation.frames[operation.frameIndex]?.kind !== 'install') {
           const previousConversation = await stateStore.get(operation.conversationKey)
+          const nextFrame = operation.frames[operation.frameIndex]
+          const preserveDeferredInstallKeys = Boolean(nextFrame?.deferredPayloadId)
           const installationState = operation.codexRequest.model === 'tether-compact'
             ? compactInstallationState(operation.codexRequest, { conversation: previousConversation, connectionId: operation.connectionId })
             : {}
@@ -271,7 +289,9 @@ export function createBrowserTurnController({
             bootstrapVersion: operation.installBootstrap ? BOOTSTRAP_VERSION : previousConversation?.bootstrapVersion ?? null,
             browserSessionId: operation.browserSessionId,
             providerConversationId: operation.providerConversationId,
-            installedInstallKeys: [],
+            installedInstallKeys: preserveDeferredInstallKeys
+              ? previousConversation?.installedInstallKeys ?? []
+              : [],
             ...installationState,
             updatedAt: Date.now(),
           })
@@ -378,16 +398,13 @@ export function createBrowserTurnController({
       originalRequestId: operation.requestId,
       definitions,
     })
-    if (prompt.length > 60000) throw coded('deferred_tool_schema_too_large', 'Selected tool schema exceeds the browser message limit')
-    operation.frames.push({
+    appendPreparedFrame(operation, {
       requestId: schemaRequestId,
       kind: 'schema',
       protocolHelpDelivered:
         sourceFrame.kind === 'protocol_help' || sourceFrame.protocolHelpDelivered === true,
       prompt,
     })
-    operation.frameIndex += 1
-    dispatchFrame(operation)
   }
 
   function queueProtocolHelpFrame(operation, sourceFrame, topics) {
@@ -398,18 +415,13 @@ export function createBrowserTurnController({
       originalCommand: sourceFrame.prompt,
       topics,
     })
-    if (prompt.length > 60_000) {
-      throw coded('protocol_help_too_large', 'Selected protocol documentation exceeds the browser message limit')
-    }
-    operation.frames.push({
+    appendPreparedFrame(operation, {
       requestId: helpRequestId,
       kind: 'protocol_help',
       toolSchemaDelivered: sourceFrame.kind === 'schema' || sourceFrame.toolSchemaDelivered === true,
       protocolHelpDelivered: true,
       prompt,
     })
-    operation.frameIndex += 1
-    dispatchFrame(operation)
   }
 
   function queueCompletionCheckFrame(operation, sourceFrame, candidateAnswer) {
@@ -420,16 +432,13 @@ export function createBrowserTurnController({
       candidateAnswer,
       offeredTools: offeredToolReferences(operation.codexRequest.tools ?? []),
     })
-    if (prompt.length > 60_000) throw coded('completion_check_too_large', 'Completion check exceeds the browser message limit')
-    operation.frames.push({
+    appendPreparedFrame(operation, {
       requestId: completionRequestId,
       kind: 'completion_check',
       toolSchemaDelivered: sourceFrame.kind === 'schema' || sourceFrame.toolSchemaDelivered === true,
       protocolHelpDelivered: sourceFrame.kind === 'protocol_help' || sourceFrame.protocolHelpDelivered === true,
       prompt,
     })
-    operation.frameIndex += 1
-    dispatchFrame(operation)
   }
 
   function queueUnavailableToolFrame(operation, sourceFrame, error, maxAttempts) {
@@ -444,14 +453,18 @@ export function createBrowserTurnController({
       attempt: operation.unavailableToolCount,
       maxAttempts,
     })
-    if (prompt.length > 60_000) throw coded('unavailable_tool_recovery_too_large', 'Unavailable-tool recovery exceeds the browser message limit')
-    operation.frames.push({
+    appendPreparedFrame(operation, {
       requestId: unavailableRequestId,
       kind: 'tool_unavailable',
       toolSchemaDelivered: sourceFrame.kind === 'schema' || sourceFrame.toolSchemaDelivered === true,
       protocolHelpDelivered: sourceFrame.kind === 'protocol_help' || sourceFrame.protocolHelpDelivered === true,
       prompt,
     })
+  }
+
+  function appendPreparedFrame(operation, frame) {
+    const prepared = prepareBrowserFrames([frame], { providerId: operation.providerId })
+    operation.frames.push(...prepared)
     operation.frameIndex += 1
     dispatchFrame(operation)
   }
@@ -496,6 +509,13 @@ function isSubmittedInstallEcho(value, requestId) {
   return text.includes(requestId) && /"type"\s*:\s*"tether_install"/.test(text)
 }
 
+function isInstallAcknowledgement(envelope) {
+  if (envelope?.type !== 'assistant_text' || typeof envelope.content !== 'string') return false
+  const content = envelope.content.trim()
+  if (content === 'TETHER_INSTALL_OK') return true
+  return /^[^{}\r\n]{1,80}\b(?:said|says)\s+TETHER_INSTALL_OK$/i.test(content)
+}
+
 function stableResponseFromTimeout(error) {
   if (error?.code !== 'response_timeout') return null
   const match = String(error.message ?? '').match(/\((\{"rootConnected"[\s\S]*\})\)$/)
@@ -512,6 +532,28 @@ function stableResponseFromTimeout(error) {
   }
 }
 
+export function observedComposerPromptBudget(error) {
+  if (error?.code !== 'prompt_verification_failed') return null
+  const match = String(error.message ?? '').match(/\((\{"expectedLength"[\s\S]*\})\)$/)
+  if (!match) return null
+  try {
+    const diagnostic = JSON.parse(match[1])
+    const retained = Math.min(
+      Number.isInteger(diagnostic.actualLength) ? diagnostic.actualLength : Infinity,
+      Number.isInteger(diagnostic.normalizedActualLength) ? diagnostic.normalizedActualLength : Infinity,
+    )
+    if (
+      !Number.isFinite(retained) ||
+      retained < 6_144 ||
+      !Number.isInteger(diagnostic.expectedLength) ||
+      diagnostic.expectedLength <= retained
+    ) return null
+    return Math.max(4_096, retained - 2_048)
+  } catch {
+    return null
+  }
+}
+
 export function browserFrameTimeoutMs({ model, frame, timeoutMs, bootstrapTimeoutMs }) {
   const largeCompactFrame = model === 'tether-compact' && (frame.kind === 'install' || frame.prompt.length > 16_384)
   return largeCompactFrame ? bootstrapTimeoutMs : timeoutMs
@@ -522,9 +564,9 @@ function isToolResult(item) {
 }
 
 function parseFrameResponse(text, operation, frame, offeredTools) {
-  const requestIds = frame.kind === 'schema'
+  const requestIds = frame.responseRequestIds ?? (frame.kind === 'schema'
     ? [frame.requestId, operation.requestId]
-    : [frame.requestId]
+    : [frame.requestId])
   let lastError
   for (const requestId of new Set(requestIds)) {
     try {

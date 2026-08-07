@@ -512,3 +512,172 @@ export function buildActionabilityScript({ composerFp, sendFp, composerSelector,
     return { composer: info(composer), send: info(send), hasComposer: !!composer, hasSend: !!send };
   })()`;
 }
+
+export function buildWaitForActionableSendScript({
+  waiterId,
+  sendSelectors,
+  stopSelectors = [],
+  timeoutMs = 15_000,
+  readyStableMs = 300,
+}) {
+  return `(() => {
+    const waiterId = ${JSON.stringify(waiterId)};
+    const sendSelectors = ${JSON.stringify(sendSelectors)};
+    const stopSelectors = ${JSON.stringify(stopSelectors)};
+    const timeoutMs = ${JSON.stringify(timeoutMs)};
+    const readyStableMs = ${JSON.stringify(readyStableMs)};
+    const registryKey = '__tetherSendReadinessWaiters';
+    const registry = globalThis[registryKey] ||= new Map();
+    registry.get(waiterId)?.cancel?.();
+
+    return new Promise((resolve) => {
+      let observer = null;
+      let timeoutId = null;
+      let stableId = null;
+      let readyElement = null;
+      let lastState = { ready: false, hasSend: false, stopVisible: false };
+      let settled = false;
+
+      function isVisible(el) {
+        if (!el || !el.isConnected) return false;
+        const style = getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+        if (style.pointerEvents === 'none') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 1 && rect.height > 1;
+      }
+
+      function queryUnique(selectors) {
+        for (const selector of selectors || []) {
+          if (!selector) continue;
+          try {
+            const matches = [...document.querySelectorAll(selector)];
+            if (matches.length === 1) return { element: matches[0], selector };
+          } catch (_) {}
+        }
+        return null;
+      }
+
+      function stopIsVisible() {
+        for (const selector of stopSelectors || []) {
+          try {
+            if ([...document.querySelectorAll(selector)].some(isVisible)) return true;
+          } catch (_) {}
+        }
+        return false;
+      }
+
+      function inspect() {
+        const candidate = queryUnique(sendSelectors);
+        const element = candidate?.element || null;
+        const className = typeof element?.className === 'string' ? element.className : '';
+        const label = [
+          element?.getAttribute?.('aria-label'),
+          element?.getAttribute?.('title'),
+          element?.getAttribute?.('data-testid'),
+          element?.innerText,
+        ].filter(Boolean).join(' ');
+        const disabled = Boolean(element) && (
+          element.disabled === true ||
+          element.getAttribute('aria-disabled') === 'true' ||
+          /(?:^|[\\s_-])disabled(?:$|[\\s_-])/i.test(className) ||
+          /(?:^|[\\s_-])loading(?:$|[\\s_-])/i.test(className)
+        );
+        const stopLike = /\\b(?:stop|cancel|interrupt|loading|generating|responding)\\b/i.test(label);
+        const stopVisible = stopIsVisible();
+        return {
+          ready: Boolean(element) && isVisible(element) && !disabled && !stopLike && !stopVisible,
+          hasSend: Boolean(element),
+          stopVisible,
+          disabled,
+          stopLike,
+          selector: candidate?.selector || null,
+          element,
+        };
+      }
+
+      function cleanup() {
+        observer?.disconnect();
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        if (stableId !== null) clearTimeout(stableId);
+        document.removeEventListener?.('transitionend', check, true);
+        document.removeEventListener?.('animationend', check, true);
+        globalThis.removeEventListener?.('pagehide', cancel);
+        if (registry.get(waiterId)?.cancel === cancel) registry.delete(waiterId);
+      }
+
+      function finish(result) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(result);
+      }
+
+      function cancel() {
+        finish({ ...lastState, ready: false, cancelled: true });
+      }
+
+      function check() {
+        if (settled) return;
+        const state = inspect();
+        lastState = {
+          ready: state.ready,
+          hasSend: state.hasSend,
+          stopVisible: state.stopVisible,
+          disabled: state.disabled,
+          stopLike: state.stopLike,
+          selector: state.selector,
+        };
+        if (!state.ready) {
+          readyElement = null;
+          if (stableId !== null) clearTimeout(stableId);
+          stableId = null;
+          return;
+        }
+        if (readyElement === state.element && stableId !== null) return;
+        readyElement = state.element;
+        if (stableId !== null) clearTimeout(stableId);
+        stableId = setTimeout(() => {
+          stableId = null;
+          const confirmed = inspect();
+          if (confirmed.ready && confirmed.element === readyElement) {
+            finish({
+              ready: true,
+              hasSend: true,
+              stopVisible: false,
+              disabled: false,
+              stopLike: false,
+              selector: confirmed.selector,
+            });
+          } else {
+            readyElement = null;
+            check();
+          }
+        }, readyStableMs);
+      }
+
+      registry.set(waiterId, { cancel });
+      observer = new MutationObserver(check);
+      observer.observe(document.documentElement, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ['disabled', 'aria-disabled', 'aria-label', 'title', 'class', 'style', 'hidden'],
+      });
+      document.addEventListener?.('transitionend', check, true);
+      document.addEventListener?.('animationend', check, true);
+      globalThis.addEventListener?.('pagehide', cancel, { once: true });
+      timeoutId = setTimeout(() => finish({ ...lastState, ready: false, timedOut: true }), timeoutMs);
+      check();
+    });
+  })()`;
+}
+
+export function buildCancelActionableSendWaitScript(waiterId) {
+  return `(() => {
+    const waiter = globalThis.__tetherSendReadinessWaiters?.get(${JSON.stringify(waiterId)});
+    if (!waiter) return false;
+    waiter.cancel();
+    return true;
+  })()`;
+}

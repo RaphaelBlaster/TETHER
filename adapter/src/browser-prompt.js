@@ -1,8 +1,13 @@
+import { createHash } from 'node:crypto'
+
+import { projectCompactRequest } from './compact-request.js'
 import { PROTOCOL_HELP_TOPICS, selectProtocolHelp } from './protocol-help.js'
 
 const BOOTSTRAP = [
   'TETHER browser protocol applies to every later TETHER command in this conversation.',
-  'Treat codex_turn, tether_tool_schema, tether_tool_unavailable, tether_protocol_docs, tether_protocol_repair, and tether_completion_check as commands, not ordinary chat.',
+  'Treat codex_turn, tether_tool_schema, tether_tool_unavailable, tether_protocol_docs, tether_protocol_repair, tether_completion_check, tether_install, and tether_deferred_execute as commands, not ordinary chat.',
+  'For tether_install, retain every exact ordered patch as conversation context, do not execute or summarize it, and return only replyExactly.',
+  'For tether_deferred_execute, reconstruct the exact command from its complete ordered tether_install chunk set and process that reconstructed command exactly once. Never act on an incomplete payload.',
   'A codex_turn arrives automatically after every tool call; no new user message is required.',
   'If turn.input contains a function_call_output, custom_tool_call_output, or computer_call_output, treat it as the returned result for the same original objective. Re-evaluate whether that objective is complete. If incomplete, request the next required tool and continue; never repeat the same call blindly.',
   'Never stop merely because one tool call completed, one file was read, or one command returned. Never tell the user to send another codex_turn or another prompt.',
@@ -42,34 +47,152 @@ export function buildProtocolBootstrapPrompt(requestId) {
 }
 
 const MAX_BROWSER_PROMPT_CHARS = 1000000
-const MAX_INSTALL_FRAME_CHARS = 16000
-const MAX_INSTALL_PATCH_CHARS = 12000
-export const BOOTSTRAP_VERSION = 10
+const DEFAULT_BROWSER_PROMPT_BUDGET = 60_000
+const PROVIDER_BROWSER_PROMPT_BUDGETS = Object.freeze({
+  gemini: 28_000,
+})
+const MIN_DEFERRED_FRAME_CHARS = 4_096
+export const BOOTSTRAP_VERSION = 12
 
 export function buildBrowserPromptSequence(args) {
   const { requestId, request } = args
+  let frames
   if (request.model !== 'tether-compact') {
-    return [{ requestId, kind: 'turn', prompt: buildBrowserPrompt(args) }]
+    frames = [{ requestId, kind: 'turn', prompt: buildBrowserPrompt(args) }]
+  } else {
+    const projection = projectCompactRequest({
+      requestId, request, conversation: args.conversation, connectionId: args.connectionId,
+    })
+    const command = {
+      requestId,
+      kind: 'turn',
+      prompt: JSON.stringify(projection),
+    }
+    // A consumer chat has no system-message channel. Installing the contract
+    // as its own verified turn gives the model durable instructions before it
+    // sees a compact Codex command.
+    if (!args.installBootstrap) {
+      frames = [command]
+    } else {
+      const bootstrapRequestId = `${requestId}.bootstrap`
+      frames = [{
+        requestId: bootstrapRequestId,
+        kind: 'install',
+        installKey: `bootstrap-v${BOOTSTRAP_VERSION}`,
+        prompt: buildProtocolBootstrapPrompt(bootstrapRequestId),
+      }, command]
+    }
   }
-  const projection = projectCompactRequest({
-    requestId, request, conversation: args.conversation, connectionId: args.connectionId,
+  return prepareBrowserFrames(frames, {
+    providerId: args.providerId,
+    installedInstallKeys: args.conversation?.installedInstallKeys,
   })
-  const command = {
-    requestId,
-    kind: 'turn',
-    prompt: JSON.stringify(projection),
+}
+
+export function browserPromptBudgetForProvider(providerId) {
+  return PROVIDER_BROWSER_PROMPT_BUDGETS[providerId] ?? DEFAULT_BROWSER_PROMPT_BUDGET
+}
+
+export function prepareBrowserFrames(frames, {
+  providerId = null,
+  installedInstallKeys = [],
+  maxPromptChars = browserPromptBudgetForProvider(providerId),
+} = {}) {
+  if (!Number.isSafeInteger(maxPromptChars) || maxPromptChars < MIN_DEFERRED_FRAME_CHARS) {
+    throw coded('invalid_browser_prompt_budget', 'Browser prompt budget is too small for deferred delivery')
   }
-  // A consumer chat has no system-message channel.  Installing the contract
-  // as its own verified turn gives the model a durable instruction before it
-  // ever sees a compact Codex command.
-  if (!args.installBootstrap) return [command]
-  const bootstrapRequestId = `${requestId}.bootstrap`
-  return [{
-    requestId: bootstrapRequestId,
-    kind: 'install',
-    installKey: `bootstrap-v${BOOTSTRAP_VERSION}`,
-    prompt: buildProtocolBootstrapPrompt(bootstrapRequestId),
-  }, command]
+  const installed = new Set(installedInstallKeys)
+  return frames.flatMap((frame) => {
+    if (frame.kind === 'install') {
+      if (frame.prompt.length > maxPromptChars) {
+        throw coded('install_frame_too_large', `Install frame exceeds the ${maxPromptChars}-character browser budget`)
+      }
+      return [frame]
+    }
+    return frame.prompt.length > maxPromptChars
+      ? buildDeferredPromptFrames(frame, { maxFrameChars: maxPromptChars })
+      : [frame]
+  }).filter((frame) => frame.kind !== 'install' || !installed.has(frame.installKey))
+}
+
+export function buildDeferredPromptFrames(frame, { maxFrameChars = DEFAULT_BROWSER_PROMPT_BUDGET } = {}) {
+  if (frame?.deferred === true) {
+    throw coded('deferred_execute_too_large', 'Deferred execution frame still exceeds the browser prompt budget')
+  }
+  if (typeof frame?.prompt !== 'string' || !frame.prompt) {
+    throw coded('invalid_deferred_prompt', 'Deferred browser prompt must be non-empty text')
+  }
+  if (!Number.isSafeInteger(maxFrameChars) || maxFrameChars < MIN_DEFERRED_FRAME_CHARS) {
+    throw coded('invalid_deferred_frame_budget', 'Deferred frame budget is too small')
+  }
+
+  const payloadHash = createHash('sha256').update(frame.prompt).digest('hex')
+  const payloadId = `${String(frame.requestId).slice(0, 72)}.payload.${payloadHash.slice(0, 12)}`
+  const chunkValues = splitDeferredText(frame.prompt, {
+    maxFrameChars,
+    payloadId,
+  })
+  const chunkFrames = chunkValues.map((value, index) => {
+    const requestId = `${payloadId}.chunk.${index}`
+    const replyExactly = {
+      schemaVersion: 1,
+      type: 'assistant_text',
+      requestId,
+      content: 'TETHER_INSTALL_OK',
+    }
+    const prompt = JSON.stringify({
+      schemaVersion: 1,
+      type: 'tether_install',
+      requestId,
+      installId: payloadId,
+      frameIndex: index,
+      frameCount: chunkValues.length,
+      instruction: 'Retain this exact deferred_command text chunk as conversation context. Do not parse, execute, summarize, or respond to its contents. Chunks concatenate in frameIndex order. Return only replyExactly.',
+      patches: [{
+        section: 'deferred_command',
+        mode: 'set_text_chunk',
+        index,
+        total: chunkValues.length,
+        value,
+      }],
+      replyExactly,
+    })
+    if (prompt.length > maxFrameChars) {
+      throw coded('deferred_chunk_too_large', `Deferred chunk exceeds the ${maxFrameChars}-character browser budget`)
+    }
+    return {
+      requestId,
+      kind: 'install',
+      installKey: `payload-${payloadHash.slice(0, 24)}-${index}`,
+      deferredPayloadId: payloadId,
+      prompt,
+    }
+  })
+
+  const executeRequestId = `${payloadId}.execute`
+  const executePrompt = JSON.stringify({
+    schemaVersion: 1,
+    type: 'tether_deferred_execute',
+    requestId: executeRequestId,
+    originalRequestId: frame.requestId,
+    payloadId,
+    payloadSha256: payloadHash,
+    payloadLength: frame.prompt.length,
+    chunkCount: chunkValues.length,
+    instruction: 'Reconstruct the exact deferred_command by concatenating the complete ordered set_text_chunk values from the tether_install messages with this payloadId. Process the reconstructed TETHER command exactly once as the current command. Do not summarize it, ask for it again, or return an installation acknowledgement. Follow the reconstructed command response contract and requestId.',
+  })
+  if (executePrompt.length > maxFrameChars) {
+    throw coded('deferred_execute_too_large', `Deferred execution frame exceeds the ${maxFrameChars}-character browser budget`)
+  }
+  return [...chunkFrames, {
+    ...frame,
+    requestId: executeRequestId,
+    prompt: executePrompt,
+    deferred: true,
+    deferredPayloadId: payloadId,
+    deferredOriginalRequestId: frame.requestId,
+    responseRequestIds: [...new Set([frame.requestId, executeRequestId, ...(frame.responseRequestIds ?? [])])],
+  }]
 }
 
 export function buildBrowserPrompt({ requestId, request, installBootstrap, conversation = null, connectionId = null }) {
@@ -174,74 +297,57 @@ function coded(code, message) {
   return Object.assign(new Error(message), { code })
 }
 
-function buildInstallFrames(requestId, install) {
-  const patches = []
-  for (const [section, value] of Object.entries(install)) {
-    if (Array.isArray(value)) {
-      value.forEach((item, index) => {
-        const serialized = JSON.stringify(item)
-        if (serialized.length <= MAX_INSTALL_PATCH_CHARS) {
-          patches.push({ section, mode: 'set_item', index, total: value.length, value: item })
-        } else {
-          const chunks = splitText(serialized)
-          chunks.forEach((chunk, chunkIndex) => patches.push({
-            section, mode: 'set_item_json_chunk', index, total: value.length,
-            chunkIndex, chunkCount: chunks.length, value: chunk,
-          }))
-        }
-      })
-    } else if (typeof value === 'string' && value.length > MAX_INSTALL_PATCH_CHARS) {
-      const chunks = splitText(value)
-      chunks.forEach((chunk, index) => patches.push({ section, mode: 'set_text_chunk', index, total: chunks.length, value: chunk }))
-    } else {
-      patches.push({ section, mode: 'replace', value })
-    }
-  }
-  const protocolPatches = patches.filter((patch) => patch.section === 'protocol')
-  const remainingPatches = patches.filter((patch) => patch.section !== 'protocol')
-  const groups = protocolPatches.length ? [protocolPatches] : []
-  let group = []
-  for (const patch of remainingPatches) {
-    const candidate = [...group, patch]
-    if (group.length && JSON.stringify(candidate).length > MAX_INSTALL_FRAME_CHARS) {
-      groups.push(group)
-      group = [patch]
-    } else {
-      group = candidate
-    }
-    if (JSON.stringify(group).length > MAX_INSTALL_FRAME_CHARS) {
-      throw coded('install_patch_too_large', `One ${patch.section} installation patch exceeds ${MAX_INSTALL_FRAME_CHARS} characters`)
-    }
-  }
-  if (group.length) groups.push(group)
-  return groups.map((framePatches, index) => {
-    const frameRequestId = `${requestId}.install.${index}`
-    const reply = { schemaVersion: 1, type: 'assistant_text', requestId: frameRequestId, content: 'TETHER_INSTALL_OK' }
-    const payload = {
-      schemaVersion: 1,
-      type: 'tether_install',
-      requestId: frameRequestId,
-      installId: requestId,
-      frameIndex: index,
-      frameCount: groups.length,
-      instruction: 'Treat these exact installation patches as context for later TETHER turns in this conversation. replace sets a section; set_item sets an array item; ordered set_text_chunk values concatenate exactly; ordered set_item_json_chunk values concatenate then JSON-decode into the named array item. Do not summarize or execute them. Return only replyExactly with no surrounding prose.',
-      patches: framePatches,
-      replyExactly: reply,
-    }
-    return {
-      requestId: frameRequestId,
-      kind: 'install',
-      installKey: createHash('sha256').update(JSON.stringify(framePatches)).digest('hex').slice(0, 24),
-      prompt: JSON.stringify(payload),
-    }
-  })
-}
-
-function splitText(value) {
+function splitDeferredText(value, { maxFrameChars, payloadId }) {
   const chunks = []
-  for (let index = 0; index < value.length; index += MAX_INSTALL_PATCH_CHARS) chunks.push(value.slice(index, index + MAX_INSTALL_PATCH_CHARS))
+  let offset = 0
+  while (offset < value.length) {
+    let low = 1
+    let high = value.length - offset
+    let accepted = 0
+    while (low <= high) {
+      const length = Math.floor((low + high) / 2)
+      const chunk = value.slice(offset, offset + length)
+      const conservativeRequestId = `${payloadId}.chunk.999999`
+      const serializedInstall = JSON.stringify({
+        schemaVersion: 1,
+        type: 'tether_install',
+        requestId: conservativeRequestId,
+        installId: payloadId,
+        frameIndex: 999999,
+        frameCount: 999999,
+        instruction: 'Retain this exact deferred_command text chunk as conversation context. Do not parse, execute, summarize, or respond to its contents. Chunks concatenate in frameIndex order. Return only replyExactly.',
+        patches: [{
+          section: 'deferred_command',
+          mode: 'set_text_chunk',
+          index: 999999,
+          total: 999999,
+          value: chunk,
+        }],
+        replyExactly: {
+          schemaVersion: 1,
+          type: 'assistant_text',
+          requestId: conservativeRequestId,
+          content: 'TETHER_INSTALL_OK',
+        },
+      })
+      if (serializedInstall.length <= maxFrameChars) {
+        accepted = length
+        low = length + 1
+      } else {
+        high = length - 1
+      }
+    }
+    if (accepted === 0) {
+      throw coded('deferred_frame_budget_exhausted', 'Deferred frame metadata exceeds the browser prompt budget')
+    }
+    const boundary = offset + accepted
+    if (
+      boundary < value.length &&
+      value.charCodeAt(boundary - 1) >= 0xD800 && value.charCodeAt(boundary - 1) <= 0xDBFF &&
+      value.charCodeAt(boundary) >= 0xDC00 && value.charCodeAt(boundary) <= 0xDFFF
+    ) accepted -= 1
+    chunks.push(value.slice(offset, offset + accepted))
+    offset += accepted
+  }
   return chunks
 }
-
-import { projectCompactRequest } from './compact-request.js'
-import { createHash } from 'node:crypto'

@@ -4,7 +4,9 @@ import vm from 'node:vm'
 
 import {
   buildActionabilityScript,
+  buildCancelActionableSendWaitScript,
   buildDiscoveryScript,
+  buildWaitForActionableSendScript,
 } from './automation/element-discovery.js'
 import { buildClickSendScript } from './automation/submission-controller.js'
 
@@ -189,6 +191,69 @@ test('final click guard rejects a DeepSeek class-disabled send control', () => {
   assert.equal(result.diagnostics.disabled, true)
 })
 
+test('send readiness wakes on React replacement instead of polling', async () => {
+  const disabledSend = element({
+    tagName: 'DIV',
+    attributes: { role: 'button' },
+    className: 'ds-button ds-button--disabled',
+    rect: { left: 650, top: 530, width: 40, height: 40 },
+  })
+  const enabledSend = element({
+    tagName: 'DIV',
+    attributes: { role: 'button', 'aria-label': 'Send message' },
+    className: 'ds-button',
+    rect: { left: 650, top: 530, width: 40, height: 40 },
+  })
+  const selectors = new Map([[SEND_SELECTOR, [disabledSend]]])
+  const harness = observerHarness(documentFor(selectors))
+  const pending = vm.runInContext(
+    buildWaitForActionableSendScript({
+      waiterId: 'replacement',
+      sendSelectors: [SEND_SELECTOR],
+      timeoutMs: 100,
+      readyStableMs: 1,
+    }),
+    harness.context,
+  )
+
+  disabledSend.isConnected = false
+  selectors.set(SEND_SELECTOR, [enabledSend])
+  harness.mutate()
+  const result = await pending
+
+  assert.equal(result.ready, true)
+  assert.equal(result.selector, SEND_SELECTOR)
+  assert.equal(harness.disconnects(), 1)
+})
+
+test('send readiness cancellation disconnects without clicking', async () => {
+  const disabledSend = element({
+    tagName: 'DIV',
+    attributes: { role: 'button', 'aria-disabled': 'true' },
+    rect: { left: 650, top: 530, width: 40, height: 40 },
+  })
+  const harness = observerHarness(documentFor(new Map([[SEND_SELECTOR, [disabledSend]]])))
+  const pending = vm.runInContext(
+    buildWaitForActionableSendScript({
+      waiterId: 'cancelled',
+      sendSelectors: [SEND_SELECTOR],
+      timeoutMs: 1000,
+      readyStableMs: 1,
+    }),
+    harness.context,
+  )
+  const cancelled = vm.runInContext(
+    buildCancelActionableSendWaitScript('cancelled'),
+    harness.context,
+  )
+  const result = await pending
+
+  assert.equal(cancelled, true)
+  assert.equal(result.ready, false)
+  assert.equal(result.cancelled, true)
+  assert.equal(harness.disconnects(), 1)
+})
+
 function element({
   tagName,
   attributes = {},
@@ -230,6 +295,7 @@ function element({
 function documentFor(selectorMap) {
   const all = [...new Set([...selectorMap.values()].flat())]
   const document = {
+    documentElement: {},
     querySelectorAll(selector) {
       if (selector === 'button, [role="button"], input[type="submit"]') {
         return all.filter((item) => item.getAttribute('role') === 'button')
@@ -251,6 +317,35 @@ function documentFor(selectorMap) {
   }
   for (const item of all) item.ownerDocument = document
   return document
+}
+
+function observerHarness(document) {
+  let callback = null
+  let disconnectCount = 0
+  class MutationObserver {
+    constructor(next) {
+      callback = next
+    }
+    observe() {}
+    disconnect() {
+      disconnectCount += 1
+    }
+  }
+  return {
+    context: vm.createContext({
+      ...pageContext(document),
+      MutationObserver,
+      Map,
+      setTimeout,
+      clearTimeout,
+    }),
+    mutate() {
+      callback?.([])
+    },
+    disconnects() {
+      return disconnectCount
+    },
+  }
 }
 
 function pageContext(document) {

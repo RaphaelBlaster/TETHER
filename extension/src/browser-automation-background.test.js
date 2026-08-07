@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   createBrowserAutomation,
+  promptVerificationFailureMessage,
   shouldRetryDeepSeekSubmission,
   submissionMethodForProvider,
 } from './automation/browser-automation.js'
@@ -37,6 +38,30 @@ test('retries DeepSeek Enter only while the exact prompt remains untouched', () 
     evidence: { ...untouched.evidence, stopVisible: true },
   }, 2113), false)
   assert.equal(shouldRetryDeepSeekSubmission(untouched, 2114), false)
+})
+
+test('prompt verification diagnostics expose only bounded mismatch metadata', () => {
+  const message = promptVerificationFailureMessage({
+    expectedLength: 4096,
+    actualLength: 2048,
+    normalizedExpectedLength: 4080,
+    normalizedActualLength: 2032,
+    innerTextLength: 2048,
+    textContentLength: 2050,
+    mismatchIndex: 2032,
+    expectedCode: 65,
+    actualCode: 8203,
+    zeroWidthCount: 1,
+    valueSource: 'innerText',
+    tag: 'DIV',
+    contentEditable: true,
+    preview: 'private prompt content must not cross the diagnostic boundary',
+  })
+
+  assert.match(message, /"expectedLength":4096/)
+  assert.match(message, /"mismatchIndex":2032/)
+  assert.match(message, /"actualCode":8203/)
+  assert.doesNotMatch(message, /private prompt content/)
 })
 
 test('wakes a hidden provider target before reading or writing its DOM', async () => {

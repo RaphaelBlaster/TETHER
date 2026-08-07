@@ -13,6 +13,8 @@ import { createCdpClient, sleep } from './cdp-client.js';
 import {
   buildDiscoveryScript,
   buildActionabilityScript,
+  buildWaitForActionableSendScript,
+  buildCancelActionableSendWaitScript,
 } from './element-discovery.js';
 import { buildWritePromptScript } from './composer-controller.js';
 import {
@@ -66,20 +68,79 @@ function buildVerifyPromptScript({
     if (!el) return { ok: false, code: 'composer_not_found' };
     if (shouldFocus) el.focus();
 
-    const value = (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT')
+    const isTextField = el.tagName === 'TEXTAREA' || el.tagName === 'INPUT';
+    const innerText = isTextField ? null : String(el.innerText || '');
+    const textContent = isTextField ? null : String(el.textContent || '');
+    const value = isTextField
       ? String(el.value || '')
-      : String(el.innerText || el.textContent || '');
+      : String(innerText || textContent || '');
     const norm = (s) => String(s).replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+    const normalizedValue = norm(value);
+    const normalizedExpected = norm(expected);
+    let mismatchIndex = -1;
+    const comparedLength = Math.max(normalizedValue.length, normalizedExpected.length);
+    for (let index = 0; index < comparedLength; index += 1) {
+      if (normalizedValue[index] !== normalizedExpected[index]) {
+        mismatchIndex = index;
+        break;
+      }
+    }
+    let zeroWidthCount = 0;
+    for (const character of value) {
+      const code = character.charCodeAt(0);
+      if (code === 0x200b || code === 0x200c || code === 0x200d || code === 0x2060 || code === 0xfeff) {
+        zeroWidthCount += 1;
+      }
+    }
     // Exact ownership is important: containment accepts a stale composer with
     // multiple concatenated TETHER requests, which the provider will not obey.
-    const ok = norm(value) === norm(expected);
+    const ok = normalizedValue === normalizedExpected;
     return {
       ok,
       focused: !shouldFocus || document.activeElement === el,
-      length: value.length,
-      preview: value.slice(0, 120),
+      expectedLength: expected.length,
+      actualLength: value.length,
+      normalizedExpectedLength: normalizedExpected.length,
+      normalizedActualLength: normalizedValue.length,
+      innerTextLength: innerText?.length ?? null,
+      textContentLength: textContent?.length ?? null,
+      mismatchIndex,
+      expectedCode: mismatchIndex >= 0 && mismatchIndex < normalizedExpected.length
+        ? normalizedExpected.charCodeAt(mismatchIndex)
+        : null,
+      actualCode: mismatchIndex >= 0 && mismatchIndex < normalizedValue.length
+        ? normalizedValue.charCodeAt(mismatchIndex)
+        : null,
+      zeroWidthCount,
+      valueSource: isTextField ? 'value' : innerText ? 'innerText' : 'textContent',
+      tag: el.tagName,
+      contentEditable: !!el.isContentEditable,
     };
   })()`;
+}
+
+export function promptVerificationFailureMessage(verify) {
+  const diagnostics = {};
+  for (const key of [
+    'expectedLength',
+    'actualLength',
+    'normalizedExpectedLength',
+    'normalizedActualLength',
+    'innerTextLength',
+    'textContentLength',
+    'mismatchIndex',
+    'expectedCode',
+    'actualCode',
+    'zeroWidthCount',
+  ]) {
+    if (Number.isInteger(verify?.[key])) diagnostics[key] = verify[key];
+  }
+  if (['value', 'innerText', 'textContent'].includes(verify?.valueSource)) {
+    diagnostics.valueSource = verify.valueSource;
+  }
+  if (typeof verify?.tag === 'string') diagnostics.tag = verify.tag.slice(0, 20);
+  if (typeof verify?.contentEditable === 'boolean') diagnostics.contentEditable = verify.contentEditable;
+  return `Composer did not contain the exact prompt after write (${JSON.stringify(diagnostics)})`;
 }
 
 export function submissionMethodForProvider(providerId) {
@@ -126,6 +187,30 @@ export function createBrowserAutomation({
   function throwIfAborted(signal) {
     if (signal?.aborted) {
       fail(ErrorCodes.OPERATION_CANCELLED, 'Operation cancelled');
+    }
+  }
+
+  async function waitForSendReadiness(tabId, expression, cancelExpression, signal) {
+    throwIfAborted(signal);
+    const aborted = Symbol('aborted');
+    let abortListener;
+    const abortPromise = new Promise((resolve) => {
+      abortListener = () => resolve(aborted);
+      signal.addEventListener('abort', abortListener, { once: true });
+    });
+    try {
+      const result = await Promise.race([
+        cdp.evaluate(tabId, expression),
+        abortPromise,
+      ]);
+      if (result === aborted) {
+        cdp.evaluate(tabId, cancelExpression).catch(() => {});
+        throwIfAborted(signal);
+      }
+      throwIfAborted(signal);
+      return result;
+    } finally {
+      signal.removeEventListener('abort', abortListener);
     }
   }
 
@@ -202,13 +287,11 @@ export function createBrowserAutomation({
     }
 
     const ac = new AbortController();
+    const relayExternalAbort = () => ac.abort();
+    if (signal?.aborted) ac.abort();
+    else signal?.addEventListener?.('abort', relayExternalAbort, { once: true });
     inflight.set(key, ac);
-
-    const linked = {
-      get aborted() {
-        return ac.signal.aborted || Boolean(signal?.aborted);
-      },
-    };
+    const linked = ac.signal;
 
     const runPromise = (async () => {
       const stage = (name, extra) => {
@@ -390,7 +473,7 @@ export function createBrowserAutomation({
           if (!verify?.ok) {
             fail(
               ErrorCodes.PROMPT_VERIFICATION_FAILED,
-              'Composer did not contain the exact prompt after write'
+              promptVerificationFailureMessage(verify)
             );
           }
         }
@@ -401,44 +484,66 @@ export function createBrowserAutomation({
 
         stage(OperationStage.RESOLVING_SEND);
         let sendMeta = discovery.send;
-        const deadlineSend = Date.now() + 15000;
-        for (;;) {
-          throwIfAborted(linked);
-          const rediscovery = await cdp.evaluate(
-            tabId,
-            buildDiscoveryScript({
-              composerHints,
-              submitHints,
-              calibratedComposer: calibration?.composer || null,
-              calibratedSend: calibration?.send || null,
-              calibratedComposerSelectors,
-              calibratedSendSelectors,
-            })
+        const sendWaiterId = `${key}::send-ready`;
+        const readiness = await waitForSendReadiness(
+          tabId,
+          buildWaitForActionableSendScript({
+            waiterId: sendWaiterId,
+            sendSelectors: uniqueSelectors(
+              sendMeta?.selector ? [sendMeta.selector] : [],
+              submitHints
+            ),
+            stopSelectors: uniqueSelectors(stopHints, progressHints),
+            timeoutMs: 15_000,
+          }),
+          buildCancelActionableSendWaitScript(sendWaiterId),
+          linked
+        );
+        if (!readiness?.ready) {
+          fail(
+            readiness?.hasSend
+              ? ErrorCodes.SEND_NOT_ACTIONABLE
+              : ErrorCodes.SEND_NOT_FOUND,
+            readiness?.hasSend
+              ? 'Send control never became actionable'
+              : 'Send control not found',
+            readiness
           );
-          sendMeta = rediscovery?.send || sendMeta;
+        }
 
-          const act = await cdp.evaluate(
-            tabId,
-            buildActionabilityScript({
-              composerFp: discovery.composer.fingerprint,
-              sendFp: sendMeta?.fingerprint,
-              composerSelector: discovery.composer.selector,
-              sendSelector: sendMeta?.selector,
-            })
+        const rediscovery = await cdp.evaluate(
+          tabId,
+          buildDiscoveryScript({
+            composerHints,
+            submitHints,
+            calibratedComposer: calibration?.composer || null,
+            calibratedSend: calibration?.send || null,
+            calibratedComposerSelectors,
+            calibratedSendSelectors,
+          })
+        );
+        sendMeta = rediscovery?.send || {
+          ...(sendMeta || {}),
+          selector: readiness.selector,
+          method: sendMeta?.method || 'readiness_observer',
+        };
+        const finalActionability = await cdp.evaluate(
+          tabId,
+          buildActionabilityScript({
+            composerFp: discovery.composer.fingerprint,
+            sendFp: sendMeta?.fingerprint,
+            composerSelector: discovery.composer.selector,
+            sendSelector: sendMeta?.selector,
+          })
+        );
+        if (!finalActionability?.send?.actionable) {
+          fail(
+            finalActionability?.hasSend
+              ? ErrorCodes.SEND_NOT_ACTIONABLE
+              : ErrorCodes.SEND_NOT_FOUND,
+            'Send control changed before submission',
+            finalActionability
           );
-
-          if (act?.send?.actionable) break;
-          if (Date.now() > deadlineSend) {
-            fail(
-              sendMeta
-                ? ErrorCodes.SEND_NOT_ACTIONABLE
-                : ErrorCodes.SEND_NOT_FOUND,
-              sendMeta
-                ? 'Send control never became actionable'
-                : 'Send control not found'
-            );
-          }
-          await sleep(120);
         }
 
         stage(OperationStage.SUBMITTING);
@@ -627,6 +732,7 @@ export function createBrowserAutomation({
           { lastLength: lastExtract?.length || 0 }
         );
       } finally {
+        signal?.removeEventListener?.('abort', relayExternalAbort);
         inflight.delete(key);
       }
     })();
