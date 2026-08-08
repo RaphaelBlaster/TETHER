@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "origin": "https://chat.z.ai",
+  "adapterVersion": 1,
+  "engineVersion": 1,
+  "composer": {
+    "selectors": [
+      "textarea#chat-input",
+      "form textarea.input-scroll",
+      "textarea[placeholder=\"How can I help you today?\"]",
+      "textarea[placeholder=\"Send a Message\"]"
+    ]
+  },
+  "send": {
+    "selectors": [
+      "button#send-message-button[type=\"submit\"]",
+      "form:has(textarea#chat-input) button.sendMessageButton[type=\"submit\"]",
+      "form:has(textarea#chat-input) button[type=\"submit\"]"
+    ]
+  },
+  "response": {
+    "turnSelectors": [
+      "div[id^=\"message-\"]:has(.chat-assistant)",
+      ".chat-assistant"
+    ],
+    "contentSelectors": [
+      ".chat-assistant.markdown-prose"
+    ],
+    "excludeSelectors": []
+  },
+  "completion": {
+    "stopSelectors": [
+      "form:has(textarea#chat-input) button:not([type])",
+      "form:has(textarea#chat-input) button.flex.justify-center.items-center.bg-black"
+    ],
+    "progressSelectors": []
+  }
+}
