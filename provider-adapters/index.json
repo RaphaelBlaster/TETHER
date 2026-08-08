@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "registryVersion": 7,
-  "generatedAt": "2026-07-26T06:08:15.977Z",
+  "registryVersion": 8,
+  "generatedAt": "2026-08-08T11:32:28.604Z",
   "providers": {
     "arena.ai": {
       "origin": "https://arena.ai",
@@ -26,6 +26,12 @@
       "adapterVersion": 1,
       "url": "./sites/chat.openai.com.json",
       "sha256": "308db37c8a2fd5c101beecd5d9b87b689e74390e3d3fb5dd3e33c924d8139b91"
+    },
+    "chat.z.ai": {
+      "origin": "https://chat.z.ai",
+      "adapterVersion": 1,
+      "url": "./sites/chat.z.ai.json",
+      "sha256": "f449b24056925558a59dde30a084d5a4b318ecfe86dc461be3cbccdce05ce8f6"
     },
     "chatgpt.com": {
       "origin": "https://chatgpt.com",
